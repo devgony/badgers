@@ -56,7 +56,7 @@ Rust:
 
 Python:
 
-- `coverage.py` 사용
+- `coverage.py` 사용 (LCOV 출력은 coverage.py 6.3 이상 필요)
 - `coverage run -m pytest`
 - `coverage combine`
 - `coverage lcov` 또는 `coverage json`
@@ -106,10 +106,12 @@ gs://coverage-bucket/
         timetree-planner-server/
           commits/{sha}/coverage.json.zst
           commits/{sha}/lcov.info.zst
-          refs/main/latest.json
+          refs/{encoded_branch}/latest.json
           prs/{pr_number}/latest.json
           runs/{github_run_id}/manifest.json
 ```
+
+주의: branch 이름에는 `/`가 들어갈 수 있으므로 (`release/1.2` 등) object key에 넣을 때 인코딩 규칙이 필요하다 (예: `/` → `__`, 또는 URL-safe percent encoding). default branch가 `main`이 아닐 수 있으므로 `refs/main`을 하드코딩하지 않는다.
 
 보관 정책:
 
@@ -135,6 +137,8 @@ permissions:
 
 steps:
   - uses: actions/checkout@v4
+    with:
+      fetch-depth: 0  # merge-base 계산과 git diff base...head에 필요
 
   - uses: google-github-actions/auth@v3
     with:
@@ -159,7 +163,7 @@ PR 이벤트:
 2. Rust coverage를 생성한다.
 3. Python coverage를 생성한다.
 4. 두 report를 공통 snapshot으로 병합한다.
-5. GCS에서 base branch의 최신 성공 snapshot을 읽는다.
+5. GCS에서 baseline snapshot을 읽는다. 우선순위: merge-base commit의 snapshot (`commits/{merge_base_sha}/`) → 없으면 base branch의 최신 성공 snapshot.
 6. 전체 coverage 증감을 계산한다.
 7. `git diff base...head` 기준 변경 라인만 뽑아 diff coverage를 계산한다.
 8. GitHub Check Run과 PR comment를 작성한다.
@@ -168,16 +172,22 @@ PR 이벤트:
 Base branch push:
 
 1. main 또는 default branch push에서 coverage를 계산한다.
-2. 성공한 snapshot을 `refs/main/latest.json`으로 갱신한다.
-3. 이후 PR 비교의 baseline으로 사용한다.
+2. commit별 snapshot을 `commits/{sha}/`에 저장하고, `refs/{encoded_branch}/latest.json` 포인터를 갱신한다.
+3. latest.json 갱신 시 GCS precondition (`ifGenerationMatch`)으로 동시 push 간 race를 방지하고, 더 오래된 commit이 최신 포인터를 덮어쓰지 않도록 commit timestamp 또는 first-parent 순서를 비교한다.
+4. 이후 PR 비교의 baseline으로 사용한다.
 
 ## 비교 기준
 
 전체 coverage 증감:
 
 ```text
-PR head snapshot - base branch latest successful snapshot
+PR head snapshot - baseline snapshot
 ```
+
+Baseline 선택 우선순위:
+
+1. **merge-base commit의 snapshot** (`git merge-base base head` 기준). PR이 분기된 이후 base branch에 들어간 변경이 PR의 증감으로 잘못 귀속되는 것을 막는다.
+2. merge-base snapshot이 없으면 base branch의 최신 성공 snapshot (`refs/{branch}/latest.json`)으로 fallback하고, 리포트에 "approximate baseline"임을 명시한다.
 
 Diff coverage:
 
@@ -207,6 +217,8 @@ struct CoverageSnapshot {
 struct FileCoverage {
     path: String,
     language: Language,
+    // executable_lines/covered_lines는 line_hits에서 유도되는 캐시 값이다.
+    // canonical source는 line_hits이며, 역직렬화 시 재검증한다.
     executable_lines: u32,
     covered_lines: u32,
     line_hits: Vec<LineHit>,
@@ -304,12 +316,15 @@ GitHub artifacts backend는 demo 또는 작은 저장소용으로만 둔다. 장
 
 ## 주요 리스크
 
+- **Fork PR 제약**: fork에서 온 `pull_request` 이벤트는 `GITHUB_TOKEN`이 read-only라 `id-token: write`(WIF 인증)와 `pull-requests: write`(comment)가 동작하지 않는다. 사내(동일 repo branch PR)에서는 문제없지만, 오픈소스화 시 fork PR 처리 전략(`workflow_run` 2단계 패턴 등)이 필수다. `pull_request_target`은 보안 리스크가 크므로 기본값으로 쓰지 않는다.
 - Python subprocess/multiprocessing coverage 설정이 누락될 수 있다.
 - Rust workspace와 Python package가 섞인 monorepo에서 path normalization이 중요하다.
 - 여러 matrix job에서 생성된 partial report를 안정적으로 병합해야 한다.
 - generated files, migration files, test files 제외 정책을 명확히 해야 한다.
 - PR comment가 매 push마다 중복 생성되지 않도록 marker 기반 update가 필요하다.
 - GCS object key를 repo, branch, PR, commit 기준으로 안정적으로 설계해야 한다.
+- base branch 동시 push 시 `latest.json` 포인터 race condition 처리가 필요하다.
+- shallow clone(`fetch-depth: 1`) 환경에서는 merge-base 계산과 three-dot diff가 실패하므로 checkout 설정 가이드가 필요하다.
 
 ## 현재 결정 사항
 
