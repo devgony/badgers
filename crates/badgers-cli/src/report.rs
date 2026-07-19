@@ -167,6 +167,21 @@ tr:target td { outline: 2px solid #0969da; }
 .uncovered-links a { margin-right: 6px; }
 .notice { background: #fff8c5; border: 1px solid rgba(212,167,44,.4); border-radius: 8px;
           padding: 10px 14px; font-size: 13px; color: #4d2d00; margin-bottom: 12px; }
+.tree { background: #fff; border: 1px solid #d0d7de; border-radius: 8px;
+        overflow: hidden; font-size: 13px; }
+.tree .row { display: grid; align-items: center;
+             grid-template-columns: minmax(220px,1fr) 80px 80px 150px 110px 140px;
+             border-bottom: 1px solid #eaeef2; }
+.tree .cell { padding: 6px 12px; text-align: right; white-space: nowrap;
+              overflow: hidden; text-overflow: ellipsis; }
+.tree .cell.name { text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.tree .row.header { background: #f6f8fa; font-weight: 600; color: #57606a; }
+.tree .row.header .cell { padding: 8px 12px; }
+.tree summary.row { cursor: pointer; list-style: none; background: #f6f8fa; font-weight: 600; }
+.tree summary.row::-webkit-details-marker { display: none; }
+.tree summary .name::before { content: "▸ "; color: #57606a; }
+.tree details[open] > summary .name::before { content: "▾ "; }
+.tree summary.row:hover, .tree .row.file:hover { background: #eaeef2; }
 "#;
 
 fn html_escape(s: &str) -> String {
@@ -206,46 +221,188 @@ fn short_sha(sha: &str) -> &str {
     if sha.len() >= 7 { &sha[..7] } else { sha }
 }
 
-fn render_index(head: &CoverageSnapshot, comparison: &Comparison) -> String {
-    let head_totals = comparison.head_totals();
-    let diff_totals = comparison.diff_totals();
+#[derive(Default)]
+struct DirNode {
+    dirs: BTreeMap<String, DirNode>,
+    files: Vec<usize>,
+}
 
-    let mut rows = String::new();
-    for (idx, delta) in comparison.files.iter().enumerate() {
-        let path = html_escape(&delta.path);
-        let name_cell = if delta.head.is_some() {
-            format!(r#"<a href="{}">{path}</a>"#, page_name(idx))
+impl DirNode {
+    fn insert(&mut self, parts: &[&str], idx: usize) {
+        match parts {
+            [_leaf] => self.files.push(idx),
+            [dir, rest @ ..] => self
+                .dirs
+                .entry((*dir).to_string())
+                .or_default()
+                .insert(rest, idx),
+            [] => {}
+        }
+    }
+}
+
+#[derive(Default, Clone, Copy)]
+struct DirAgg {
+    head_covered: u64,
+    head_executable: u64,
+    base_covered: u64,
+    base_executable: u64,
+    diff_covered: u32,
+    diff_relevant: u32,
+}
+
+impl DirAgg {
+    fn add_file(&mut self, delta: &FileDelta) {
+        if let Some(c) = delta.head {
+            self.head_covered += c.covered;
+            self.head_executable += c.executable;
+        }
+        if let Some(c) = delta.base {
+            self.base_covered += c.covered;
+            self.base_executable += c.executable;
+        }
+        self.diff_covered += delta.diff.covered;
+        self.diff_relevant += delta.diff.relevant;
+    }
+
+    fn merge(&mut self, other: DirAgg) {
+        self.head_covered += other.head_covered;
+        self.head_executable += other.head_executable;
+        self.base_covered += other.base_covered;
+        self.base_executable += other.base_executable;
+        self.diff_covered += other.diff_covered;
+        self.diff_relevant += other.diff_relevant;
+    }
+
+    fn delta_pct(&self, base_available: bool) -> Option<f64> {
+        if !base_available {
+            return None;
+        }
+        let head = badgers_core::coverage_pct(self.head_covered, self.head_executable)?;
+        let base = badgers_core::coverage_pct(self.base_covered, self.base_executable)?;
+        Some(head - base)
+    }
+}
+
+fn aggregate(node: &DirNode, files: &[FileDelta]) -> DirAgg {
+    let mut agg = DirAgg::default();
+    for &idx in &node.files {
+        agg.add_file(&files[idx]);
+    }
+    for child in node.dirs.values() {
+        agg.merge(aggregate(child, files));
+    }
+    agg
+}
+
+fn diff_cell(covered: u32, relevant: u32) -> String {
+    if relevant > 0 {
+        format!(
+            "{covered}/{relevant} ({})",
+            fmt_pct(badgers_core::coverage_pct(
+                u64::from(covered),
+                u64::from(relevant)
+            ))
+        )
+    } else {
+        "–".to_string()
+    }
+}
+
+fn indent(depth: usize) -> usize {
+    12 + depth * 18
+}
+
+fn render_tree(node: &DirNode, depth: usize, comparison: &Comparison, out: &mut String) {
+    for (name, child) in &node.dirs {
+        // Compress chains of single-child directories (apps/x/src/x -> one row).
+        let mut display = name.clone();
+        let mut target = child;
+        while target.files.is_empty() && target.dirs.len() == 1 {
+            let (next_name, next) = target.dirs.iter().next().expect("len checked");
+            display.push('/');
+            display.push_str(next_name);
+            target = next;
+        }
+        let agg = aggregate(target, &comparison.files);
+        let coverage = if agg.head_executable == 0 {
+            "–".to_string()
         } else {
-            format!(r#"<span class="removed">{path} (removed)</span>"#)
+            fmt_pct(badgers_core::coverage_pct(
+                agg.head_covered,
+                agg.head_executable,
+            ))
         };
-        let head_pct = match delta.head {
+        let open = if depth == 0 { " open" } else { "" };
+        let _ = writeln!(
+            out,
+            r#"<details class="dirnode"{open}><summary class="row dir">
+<span class="cell name" style="padding-left:{pad}px">{display}/</span>
+<span class="cell">{exec}</span><span class="cell">{cov}</span>
+<span class="cell">{coverage}</span><span class="cell">{delta}</span>
+<span class="cell">{diff}</span></summary>"#,
+            pad = indent(depth),
+            display = html_escape(&display),
+            exec = agg.head_executable,
+            cov = agg.head_covered,
+            delta = delta_cell(agg.delta_pct(comparison.base_available)),
+            diff = diff_cell(agg.diff_covered, agg.diff_relevant),
+        );
+        render_tree(target, depth + 1, comparison, out);
+        out.push_str("</details>\n");
+    }
+
+    for &idx in &node.files {
+        let delta = &comparison.files[idx];
+        let file_name = delta.path.rsplit('/').next().unwrap_or(&delta.path);
+        let name_cell = if delta.head.is_some() {
+            format!(
+                r#"<a href="{}">{}</a>"#,
+                page_name(idx),
+                html_escape(file_name)
+            )
+        } else {
+            format!(
+                r#"<span class="removed">{} (removed)</span>"#,
+                html_escape(file_name)
+            )
+        };
+        let coverage = match delta.head {
             Some(c) if c.executable == 0 => {
                 r#"<span class="flat">no executable lines</span>"#.to_string()
             }
             Some(c) => fmt_pct(c.pct()),
             None => "n/a".to_string(),
         };
-        let diff_cell = if delta.diff.relevant > 0 {
-            format!(
-                "{}/{} ({})",
-                delta.diff.covered,
-                delta.diff.relevant,
-                fmt_pct(delta.diff.pct())
-            )
-        } else {
-            "–".to_string()
-        };
         let (covered, executable) = delta
             .head
             .map(|c| (c.covered, c.executable))
             .unwrap_or((0, 0));
         let _ = writeln!(
-            rows,
-            "<tr><td class=\"path\">{name_cell}</td><td>{executable}</td><td>{covered}</td>\
-             <td>{head_pct}</td><td>{}</td><td>{diff_cell}</td></tr>",
-            delta_cell(delta.delta_pct()),
+            out,
+            r#"<div class="row file">
+<span class="cell name" style="padding-left:{pad}px">{name_cell}</span>
+<span class="cell">{executable}</span><span class="cell">{covered}</span>
+<span class="cell">{coverage}</span><span class="cell">{delta_html}</span>
+<span class="cell">{diff}</span></div>"#,
+            pad = indent(depth) + 18,
+            delta_html = delta_cell(delta.delta_pct()),
+            diff = diff_cell(delta.diff.covered, delta.diff.relevant),
         );
     }
+}
+
+fn render_index(head: &CoverageSnapshot, comparison: &Comparison) -> String {
+    let head_totals = comparison.head_totals();
+    let diff_totals = comparison.diff_totals();
+
+    let mut root = DirNode::default();
+    for (idx, delta) in comparison.files.iter().enumerate() {
+        let parts: Vec<&str> = delta.path.split('/').collect();
+        root.insert(&parts, idx);
+    }
+    let mut rows = String::new();
+    render_tree(&root, 0, comparison, &mut rows);
 
     let base_note = if comparison.base_available {
         "vs base snapshot"
@@ -269,12 +426,13 @@ fn render_index(head: &CoverageSnapshot, comparison: &Comparison) -> String {
 <div class="value">{diff_pct}</div>
 <div class="sub">{diff_covered}/{diff_relevant} changed executable lines</div></div>
 </div>
-<table>
-<thead><tr><th class="path">File</th><th>Lines</th><th>Covered</th>
-<th>Coverage</th><th>Δ</th><th>Diff coverage</th></tr></thead>
-<tbody>
+<div class="tree">
+<div class="row header">
+<span class="cell name">File</span><span class="cell">Lines</span>
+<span class="cell">Covered</span><span class="cell">Coverage</span>
+<span class="cell">Δ</span><span class="cell">Diff coverage</span></div>
 {rows}
-</tbody></table>
+</div>
 </main></body></html>
 "#,
         repo = html_escape(&head.repo),
