@@ -3,6 +3,7 @@ name = "badgers-lcov"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "LCOV parser producing badgers coverage models"
 
 [dependencies]

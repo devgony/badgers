@@ -6,12 +6,13 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/devgony/badgers"
 
 [workspace.dependencies]
-badgers-core = { path = "crates/badgers-core" }
-badgers-github = { path = "crates/badgers-github" }
-badgers-lcov = { path = "crates/badgers-lcov" }
-badgers-storage = { path = "crates/badgers-storage" }
+badgers-core = { path = "crates/badgers-core", version = "0.1.0" }
+badgers-github = { path = "crates/badgers-github", version = "0.1.0" }
+badgers-lcov = { path = "crates/badgers-lcov", version = "0.1.0" }
+badgers-storage = { path = "crates/badgers-storage", version = "0.1.0" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

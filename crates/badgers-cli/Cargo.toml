@@ -1,9 +1,11 @@
 [package]
-name = "badgers-cli"
+name = "badge-rs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "badgers command line interface"
+repository.workspace = true
+description = "badgers: PR line coverage checker for Python and Rust projects"
+readme = "../../README.md"
 
 [[bin]]
 name = "badgers"

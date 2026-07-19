@@ -3,6 +3,7 @@ name = "badgers-github"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "GitHub API reporting (PR comments) for badgers"
 
 [dependencies]
