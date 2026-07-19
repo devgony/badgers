@@ -15,6 +15,8 @@ class CalcTest(unittest.TestCase):
 
     def test_fizzbuzz(self):
         self.assertEqual(fizzbuzz(3), "fizz")
+        self.assertEqual(fizzbuzz(5), "buzz")
+        self.assertEqual(fizzbuzz(15), "fizzbuzz")
         self.assertEqual(fizzbuzz(7), "7")
 
 
