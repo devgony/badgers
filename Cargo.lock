@@ -301,6 +301,7 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "badgers-core",
+ "badgers-github",
  "badgers-lcov",
  "badgers-storage",
  "clap",
@@ -317,6 +318,17 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "badgers-github"
+version = "0.1.0"
+dependencies = [
+ "httpmock",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
 ]
 
 [[package]]

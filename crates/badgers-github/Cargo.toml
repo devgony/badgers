@@ -1,0 +1,15 @@
+[package]
+name = "badgers-github"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "GitHub API reporting (PR comments) for badgers"
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+httpmock = "0.7"

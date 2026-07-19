@@ -9,6 +9,7 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 badgers-core = { path = "crates/badgers-core" }
+badgers-github = { path = "crates/badgers-github" }
 badgers-lcov = { path = "crates/badgers-lcov" }
 badgers-storage = { path = "crates/badgers-storage" }
 
