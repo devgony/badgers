@@ -57,7 +57,7 @@ pub fn run(args: &CollectPythonArgs) -> Result<()> {
 
     let snapshot = CoverageSnapshot::new(
         std::env::var("GITHUB_REPOSITORY").unwrap_or_default(),
-        std::env::var("GITHUB_SHA").unwrap_or_default(),
+        checkout_sha(&repo_root),
         None,
         None,
         jiff::Timestamp::now().to_string(),
@@ -75,6 +75,22 @@ pub fn run(args: &CollectPythonArgs) -> Result<()> {
 
     print!("{}", crate::summary::render(&snapshot));
     Ok(())
+}
+
+fn checkout_sha(repo_root: &Path) -> String {
+    let output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(repo_root)
+        .output();
+    if let Ok(output) = output
+        && output.status.success()
+    {
+        let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !sha.is_empty() {
+            return sha;
+        }
+    }
+    std::env::var("GITHUB_SHA").unwrap_or_default()
 }
 
 fn detect_coverage_version(repo_root: &Path) -> Result<String> {
