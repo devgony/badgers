@@ -112,11 +112,35 @@ badgers/repos/{owner}/{repo}/
   commits/{sha}/README.md
   commits/{sha}/coverage.json.zst
   commits/{sha}/comparison.json.zst
+  commits/{sha}/html/          ← HTML report bundle (index.html, assets/, …)
   refs/{branch}/latest.json
   refs/{branch}/README.md
   prs/{number}/latest.json
   prs/{number}/README.md
 ```
+
+Pass `--html-report <DIR>` (or set it in the action) to store the generated
+`coverage-report/` directory alongside the snapshot. Every file in the tree is
+written to `commits/{sha}/html/{relative_path}`, and `html_prefix` in the
+pointer JSON records the bundle root so tooling can locate it later.
+
+**HTML is not renderable via GitHub's blob or raw URLs.** To serve it, check
+out the storage branch and run a local web server, or deploy the bundle to a
+static host separately.
+
+The storage branch always contains exactly **one parentless (orphan) commit**
+per push. History never grows: each run replaces the branch entirely with a
+single fresh commit. For this to work, the storage branch must **not** be
+branch-protected. The push uses `--force-with-lease` (matching the SHA cloned
+at the start of the run) so that two concurrent jobs fail-and-retry rather than
+silently clobbering each other.
+
+**Retention.** Set `github-storage-retention: latest` (the default) to
+automatically prune `commits/{sha}` directories that are no longer referenced
+by any `refs/*/latest.json` or `prs/*/latest.json` pointer after each push.
+Use `all` to skip pruning and keep all historical commit bundles. Retention
+operates only on the temporary clone and cannot reach the GCS bucket; GCS
+baselines are always safe.
 
 The default `github-storage-token` works when the storage repository is the
 repository running the workflow and the job grants `contents: write`. For a
