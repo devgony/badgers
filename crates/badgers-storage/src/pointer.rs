@@ -17,6 +17,10 @@ pub struct BranchPointer {
     /// an old workflow cannot roll the pointer back to an older commit.
     pub committed_at: String,
     pub snapshot_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comparison_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_key: Option<String>,
     pub updated_at: String,
 }
 
@@ -98,6 +102,8 @@ mod tests {
             commit_sha: sha.to_string(),
             committed_at: committed_at.to_string(),
             snapshot_key: format!("badgers/repos/o/r/commits/{sha}/coverage.json.zst"),
+            comparison_key: None,
+            report_key: None,
             updated_at: "2026-07-19T00:00:00Z".to_string(),
         }
     }
@@ -146,5 +152,20 @@ mod tests {
         let backend = LocalBackend::new(dir.path());
         let bad = pointer("aaa", "yesterday");
         assert!(update_pointer_if_newer(&backend, "k/latest.json", &bad).is_err());
+    }
+
+    #[test]
+    fn reads_legacy_pointer_without_optional_artifact_keys() {
+        let json = br#"{
+          "schema_version": 1,
+          "branch": "main",
+          "commit_sha": "abc",
+          "committed_at": "2026-07-19T00:00:00Z",
+          "snapshot_key": "commits/abc/coverage.json.zst",
+          "updated_at": "2026-07-19T00:01:00Z"
+        }"#;
+        let pointer: BranchPointer = serde_json::from_slice(json).unwrap();
+        assert_eq!(pointer.comparison_key, None);
+        assert_eq!(pointer.report_key, None);
     }
 }

@@ -104,6 +104,161 @@ fn push_updates_pr_pointer() {
 }
 
 #[test]
+fn push_stores_comparison_and_only_updates_latest_report_for_newer_snapshot() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store");
+    let comparison = tmp.path().join("comparison.json");
+    let report = tmp.path().join("README.md");
+    let comparison_json = serde_json::to_vec_pretty(&serde_json::json!({
+        "schema_version": 1,
+        "head_sha": "new",
+        "base_sha": null,
+        "comparison": { "base_available": false, "files": [] }
+    }))
+    .unwrap();
+    std::fs::write(&comparison, &comparison_json).unwrap();
+    std::fs::write(&report, "# New report\n").unwrap();
+
+    let newest = write_snapshot(tmp.path(), "new");
+    badgers()
+        .args(["snapshot", "push"])
+        .arg("--snapshot")
+        .arg(&newest)
+        .arg("--comparison")
+        .arg(&comparison)
+        .arg("--report")
+        .arg(&report)
+        .args([
+            "--sha",
+            "new",
+            "--committed-at",
+            "2026-07-19T10:00:00Z",
+            "--branch",
+            "main",
+        ])
+        .arg("--local-dir")
+        .arg(&store)
+        .args(["--repo", "owner/repo"])
+        .assert()
+        .success();
+
+    let root = store.join("badgers/repos/owner/repo");
+    assert_eq!(
+        std::fs::read_to_string(root.join("commits/new/README.md")).unwrap(),
+        "# New report\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("refs/main/README.md")).unwrap(),
+        "# New report\n"
+    );
+    let compressed = std::fs::read(root.join("commits/new/comparison.json.zst")).unwrap();
+    assert_eq!(
+        zstd::decode_all(compressed.as_slice()).unwrap(),
+        comparison_json
+    );
+    let pointer: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("refs/main/latest.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        pointer["comparison_key"],
+        "badgers/repos/owner/repo/commits/new/comparison.json.zst"
+    );
+    assert_eq!(
+        pointer["report_key"],
+        "badgers/repos/owner/repo/commits/new/README.md"
+    );
+
+    std::fs::write(&report, "# Old report\n").unwrap();
+    let older = write_snapshot(tmp.path(), "old");
+    badgers()
+        .args(["snapshot", "push"])
+        .arg("--snapshot")
+        .arg(&older)
+        .arg("--report")
+        .arg(&report)
+        .args([
+            "--sha",
+            "old",
+            "--committed-at",
+            "2026-07-18T10:00:00Z",
+            "--branch",
+            "main",
+        ])
+        .arg("--local-dir")
+        .arg(&store)
+        .args(["--repo", "owner/repo"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        std::fs::read_to_string(root.join("refs/main/README.md")).unwrap(),
+        "# New report\n",
+        "older snapshots must not replace the latest readable report"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("commits/old/README.md")).unwrap(),
+        "# Old report\n"
+    );
+}
+
+#[test]
+fn push_rejects_snapshot_sha_mismatch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let snapshot = write_snapshot(tmp.path(), "actual");
+    badgers()
+        .args(["snapshot", "push"])
+        .arg("--snapshot")
+        .arg(snapshot)
+        .args([
+            "--sha",
+            "different",
+            "--committed-at",
+            "2026-07-19T10:00:00Z",
+        ])
+        .arg("--local-dir")
+        .arg(tmp.path().join("store"))
+        .args(["--repo", "owner/repo"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "snapshot commit SHA actual does not match --sha different",
+        ));
+}
+
+#[test]
+fn push_rejects_comparison_sha_mismatch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let snapshot = write_snapshot(tmp.path(), "actual");
+    let comparison = tmp.path().join("comparison.json");
+    std::fs::write(
+        &comparison,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "head_sha": "different",
+            "base_sha": null,
+            "comparison": { "base_available": false, "files": [] }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    badgers()
+        .args(["snapshot", "push"])
+        .arg("--snapshot")
+        .arg(snapshot)
+        .arg("--comparison")
+        .arg(comparison)
+        .args(["--sha", "actual", "--committed-at", "2026-07-19T10:00:00Z"])
+        .arg("--local-dir")
+        .arg(tmp.path().join("store"))
+        .args(["--repo", "owner/repo"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "comparison head SHA different does not match --sha actual",
+        ));
+}
+
+#[test]
 fn baseline_fetch_prefers_exact_then_pointer_then_none() {
     let tmp = tempfile::tempdir().unwrap();
     let store = tmp.path().join("store");

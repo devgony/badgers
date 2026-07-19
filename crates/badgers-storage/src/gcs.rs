@@ -275,6 +275,8 @@ mod tests {
             commit_sha: "abc".to_string(),
             committed_at: "2026-07-19T00:00:00Z".to_string(),
             snapshot_key: "commits/abc/coverage.json.zst".to_string(),
+            comparison_key: None,
+            report_key: None,
             updated_at: "2026-07-19T00:00:00Z".to_string(),
         };
         let err = update_pointer_if_newer(&backend(&server), "refs/main/latest.json", &pointer)
@@ -301,6 +303,8 @@ mod tests {
             commit_sha: "abc".to_string(),
             committed_at: "2026-07-19T00:00:00Z".to_string(),
             snapshot_key: "commits/abc/coverage.json.zst".to_string(),
+            comparison_key: None,
+            report_key: None,
             updated_at: "2026-07-19T00:00:00Z".to_string(),
         };
         let update =
