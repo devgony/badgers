@@ -4,6 +4,22 @@ Badgers is a coverage checker for Rust and Python projects. It keeps an eye on p
 
 ![Badgers logo](./images/logo-badgers.png)
 
+## Install
+
+```bash
+cargo install badge-rs
+```
+
+The installed binary is `badgers`. One-time GCS provisioning (bucket, workload
+identity federation, service account, IAM bindings) then takes a single input:
+
+```bash
+badgers setup gcs --project YOUR_GCP_PROJECT_ID
+```
+
+CI workflows do not need the binary: the `devgony/badgers` GitHub Action builds
+and runs it on the runner.
+
 ## What It Does
 
 - Measures line coverage on every pull request update.
