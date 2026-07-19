@@ -1,0 +1,51 @@
+name: coverage
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  python-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build badgers
+        run: cargo build --release -p badgers-cli
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install coverage.py
+        run: pip install coverage
+
+      - name: Run sample tests under coverage
+        working-directory: examples/python-sample
+        run: python -m coverage run -m unittest discover -v
+
+      - name: Collect coverage snapshot
+        working-directory: examples/python-sample
+        run: |
+          "$GITHUB_WORKSPACE/target/release/badgers" collect python \
+            --repo-root . -o coverage-snapshot.json | tee coverage-summary.txt
+          {
+            echo '### 🦡 Badgers Python Coverage'
+            echo '```'
+            cat coverage-summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-snapshot
+          path: examples/python-sample/coverage-snapshot.json
