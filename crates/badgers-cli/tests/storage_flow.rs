@@ -308,6 +308,120 @@ fn baseline_fetch_prefers_exact_then_pointer_then_none() {
 }
 
 #[test]
+fn push_stores_html_bundle_and_records_html_prefix() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store");
+    let snapshot = write_snapshot(tmp.path(), "c1");
+
+    let report_dir = tmp.path().join("coverage-report");
+    std::fs::create_dir_all(report_dir.join("assets")).unwrap();
+    std::fs::write(report_dir.join("index.html"), b"<html></html>").unwrap();
+    std::fs::write(report_dir.join("assets").join("style.css"), b"body{}").unwrap();
+
+    badgers()
+        .args(["snapshot", "push"])
+        .arg("--snapshot")
+        .arg(&snapshot)
+        .arg("--html-report")
+        .arg(&report_dir)
+        .args([
+            "--sha",
+            "c1",
+            "--committed-at",
+            "2026-07-19T10:00:00Z",
+            "--branch",
+            "main",
+        ])
+        .arg("--local-dir")
+        .arg(&store)
+        .args(["--repo", "owner/repo"])
+        .assert()
+        .success();
+
+    let root = store.join("badgers/repos/owner/repo");
+    assert!(root.join("commits/c1/html/index.html").is_file());
+    assert!(root.join("commits/c1/html/assets/style.css").is_file());
+    assert_eq!(
+        std::fs::read(root.join("commits/c1/html/index.html")).unwrap(),
+        b"<html></html>"
+    );
+
+    let pointer: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("refs/main/latest.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        pointer["html_prefix"],
+        "badgers/repos/owner/repo/commits/c1/html"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn push_rejects_symlink_inside_html_report() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store");
+    let snapshot = write_snapshot(tmp.path(), "d1");
+
+    let report_dir = tmp.path().join("coverage-report");
+    std::fs::create_dir_all(&report_dir).unwrap();
+    std::os::unix::fs::symlink("/etc/passwd", report_dir.join("evil.html")).unwrap();
+
+    badgers()
+        .args(["snapshot", "push"])
+        .arg("--snapshot")
+        .arg(&snapshot)
+        .arg("--html-report")
+        .arg(&report_dir)
+        .args([
+            "--sha",
+            "d1",
+            "--committed-at",
+            "2026-07-19T10:00:00Z",
+            "--branch",
+            "main",
+        ])
+        .arg("--local-dir")
+        .arg(&store)
+        .args(["--repo", "owner/repo"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("symlink"));
+}
+
+#[cfg(unix)]
+#[test]
+fn push_rejects_backslash_in_html_filename() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store");
+    let snapshot = write_snapshot(tmp.path(), "e1");
+
+    let report_dir = tmp.path().join("coverage-report");
+    std::fs::create_dir_all(&report_dir).unwrap();
+    std::fs::write(report_dir.join("bad\\name.html"), b"x").unwrap();
+
+    badgers()
+        .args(["snapshot", "push"])
+        .arg("--snapshot")
+        .arg(&snapshot)
+        .arg("--html-report")
+        .arg(&report_dir)
+        .args([
+            "--sha",
+            "e1",
+            "--committed-at",
+            "2026-07-19T10:00:00Z",
+            "--branch",
+            "main",
+        ])
+        .arg("--local-dir")
+        .arg(&store)
+        .args(["--repo", "owner/repo"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unsafe HTML report filename"));
+}
+
+#[test]
 fn baseline_fetch_rejects_invalid_merge_base_sha() {
     let tmp = tempfile::tempdir().unwrap();
     badgers()
