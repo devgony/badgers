@@ -1,5 +1,5 @@
 use anyhow::Context;
-use badgers_storage::BranchPointer;
+use badge_rs_storage::BranchPointer;
 use clap::Args;
 
 use crate::storage_opts::StorageOpts;

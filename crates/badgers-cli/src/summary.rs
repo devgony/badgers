@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use badgers_core::CoverageSnapshot;
+use badge_rs_core::CoverageSnapshot;
 
 pub fn render(snapshot: &CoverageSnapshot) -> String {
     let path_width = snapshot

@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
 
-use badgers_core::{FileCoverage, Language, LineHit};
+use badge_rs_core::{FileCoverage, Language, LineHit};
 
 #[derive(Debug)]
 pub struct ParseOptions<'a> {

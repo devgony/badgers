@@ -1,5 +1,5 @@
 use anyhow::Context;
-use badgers_storage::{
+use badge_rs_storage::{
     BranchPointer, POINTER_SCHEMA_VERSION, PointerUpdate, PutOptions, update_pointer_if_newer,
 };
 use clap::Args;

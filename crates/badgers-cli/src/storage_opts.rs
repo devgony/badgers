@@ -1,5 +1,5 @@
 use anyhow::Context;
-use badgers_storage::{GcsBackend, Keys, LocalBackend, StorageBackend};
+use badge_rs_storage::{GcsBackend, Keys, LocalBackend, StorageBackend};
 use clap::Args;
 
 pub const TOKEN_ENV: &str = "BADGERS_GCS_TOKEN";

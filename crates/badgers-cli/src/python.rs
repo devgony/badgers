@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use badgers_core::{CoverageSnapshot, ToolVersions};
-use badgers_lcov::{ParseOptions, parse_lcov};
+use badge_rs_core::{CoverageSnapshot, ToolVersions};
+use badge_rs_lcov::{ParseOptions, parse_lcov};
 use clap::Args;
 
 const MIN_COVERAGE_PY: (u32, u32) = (6, 3);

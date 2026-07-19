@@ -2,10 +2,10 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use badgers_core::compare::{ChangedLines, Comparison, compare};
-use badgers_core::coverage_pct;
-use badgers_core::diff::parse_unified_diff;
-use badgers_github::{CommentAction, GithubClient};
+use badge_rs_core::compare::{ChangedLines, Comparison, compare};
+use badge_rs_core::coverage_pct;
+use badge_rs_core::diff::parse_unified_diff;
+use badge_rs_github::{CommentAction, GithubClient};
 use clap::Args;
 
 use crate::report::{git_diff_output, read_snapshot};
@@ -215,7 +215,7 @@ fn short_sha(sha: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use badgers_core::compare::{Counts, DiffCoverage, FileDelta};
+    use badge_rs_core::compare::{Counts, DiffCoverage, FileDelta};
 
     use super::*;
 
