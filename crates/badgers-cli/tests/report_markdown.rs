@@ -51,6 +51,7 @@ fn report_markdown_renders_hierarchy_and_source_links() {
     write(&dir.join("changes.diff"), diff);
 
     let output = dir.join("coverage-summary.md");
+    let comparison_output = dir.join("comparison.json");
     Command::cargo_bin("badgers")
         .unwrap()
         .args(["report", "markdown"])
@@ -64,6 +65,8 @@ fn report_markdown_renders_hierarchy_and_source_links() {
         .arg("https://github.example/owner/repo/blob/abcdef1")
         .arg("--output")
         .arg(&output)
+        .arg("--comparison-output")
+        .arg(&comparison_output)
         .assert()
         .success()
         .stdout(predicate::str::contains("coverage-summary.md"));
@@ -81,6 +84,13 @@ fn report_markdown_renders_hierarchy_and_source_links() {
     assert!(markdown.contains(
         "<a href=\"https://github.example/owner/repo/blob/abcdef1/apps/api/calc.py#L6\">L6</a>"
     ));
+
+    let comparison: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(comparison_output).unwrap()).unwrap();
+    assert_eq!(comparison["schema_version"], 1);
+    assert_eq!(comparison["head_sha"], "abcdef1234567890");
+    assert_eq!(comparison["base_sha"], "abcdef1234567890");
+    assert_eq!(comparison["comparison"]["files"][0]["path"], "README.md");
 }
 
 #[test]
