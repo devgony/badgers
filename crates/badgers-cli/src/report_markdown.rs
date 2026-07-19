@@ -246,7 +246,7 @@ fn render_tree(
         let _ = writeln!(
             out,
             "<details{open}>\n<summary>📁 <strong>{}/</strong> — {} ({}/{}) · Δ {} · Diff {}</summary>\n",
-            html_escape(name),
+            markdown_html_text(name),
             fmt_pct(coverage_pct(agg.head_covered, agg.head_executable)),
             agg.head_covered,
             agg.head_executable,
@@ -417,10 +417,7 @@ fn encode_path(path: &str) -> String {
 
 fn code_path(path: &str) -> String {
     let visible = visible_path(path);
-    format!(
-        "<code>{}</code>",
-        html_escape(&visible).replace('|', "&#124;")
-    )
+    format!("<code>{}</code>", markdown_html_text(&visible))
 }
 
 fn visible_path(value: &str) -> String {
@@ -449,6 +446,20 @@ fn html_escape(value: &str) -> String {
 
 fn html_attr_escape(value: &str) -> String {
     html_escape(value).replace('\'', "&#39;")
+}
+
+fn markdown_html_text(value: &str) -> String {
+    let mut escaped = String::new();
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '-' | ' ') {
+            escaped.push(ch);
+        } else if ch.is_ascii() {
+            let _ = write!(escaped, "&#x{:X};", u32::from(ch));
+        } else {
+            escaped.push(ch);
+        }
+    }
+    escaped
 }
 
 fn fmt_pct(pct: Option<f64>) -> String {
@@ -563,7 +574,7 @@ mod tests {
         let link = file_link(path, Some("https://github.com/owner/repo/blob/abcdef1"));
         assert_eq!(
             link,
-            "<a href=\"https://github.com/owner/repo/blob/abcdef1/pkg/a%60b%7Cc%0A.py\"><code>pkg/a`b&#124;c\\n.py</code></a>"
+            "<a href=\"https://github.com/owner/repo/blob/abcdef1/pkg/a%60b%7Cc%0A.py\"><code>pkg/a&#x60;b&#x7C;c&#x5C;n.py</code></a>"
         );
         assert_eq!(
             file_link(
@@ -594,7 +605,15 @@ mod tests {
             },
             None,
         );
-        assert!(markdown.contains("**Head:** <code>`\\n&lt;h1&gt;🦡</code>"));
+        assert!(markdown.contains("**Head:** <code>&#x60;&#x5C;n&#x3C;h1&#x3E;🦡</code>"));
         assert!(!markdown.contains("\n<h1>"));
+    }
+
+    #[test]
+    fn prevents_markdown_emphasis_inside_html_code() {
+        assert_eq!(
+            code_path("pkg/__init__.py"),
+            "<code>pkg/&#x5F;&#x5F;init&#x5F;&#x5F;.py</code>"
+        );
     }
 }
