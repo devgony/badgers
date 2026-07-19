@@ -96,7 +96,7 @@ fn fresh_project_creates_all_resources_and_prints_snippet() {
     let calls = fx.calls();
     for needle in [
         "services enable iam.googleapis.com",
-        "storage buckets create gs://my-proj-badgers-coverage --project my-proj --location asia-northeast3 --uniform-bucket-level-access --public-access-prevention",
+        "storage buckets create gs://my-proj-badgers-coverage --project my-proj --location asia-northeast1 --uniform-bucket-level-access --public-access-prevention",
         "workload-identity-pools create github-actions",
         "providers create-oidc gh-timetree-planner-agent",
         "--attribute-condition=assertion.repository_id == '987'",

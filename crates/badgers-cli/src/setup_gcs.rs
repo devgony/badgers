@@ -20,8 +20,8 @@ pub struct SetupGcsArgs {
     #[arg(long)]
     pub bucket: Option<String>,
 
-    /// Bucket location
-    #[arg(long, default_value = "asia-northeast3")]
+    /// Bucket location, e.g. asia-northeast1 (Tokyo), asia-northeast3 (Seoul), us-central1
+    #[arg(long, default_value = "asia-northeast1")]
     pub location: String,
 
     /// Workload identity pool ID, shared across repositories
@@ -309,6 +309,28 @@ fn ensure_provider(exec: &Exec, plan: &Plan) -> Result<()> {
             &format!("--attribute-condition={}", plan.attribute_condition()),
         ],
     )
+    .map_err(|e| org_policy_hint(e, &plan.project))
+}
+
+fn org_policy_hint(err: anyhow::Error, project: &str) -> anyhow::Error {
+    if !format!("{err:#}").contains("constraints/iam.workloadIdentityPoolProviders") {
+        return err;
+    }
+    err.context(format!(
+        "your organization blocks creating workload identity pool providers \
+         (constraints/iam.workloadIdentityPoolProviders).\n\
+         Ask an Organization Policy Administrator to allow the GitHub issuer for this \
+         project, then re-run this command:\n\n\
+         gcloud org-policies set-policy - <<'EOF'\n\
+         name: projects/{project}/policies/iam.workloadIdentityPoolProviders\n\
+         spec:\n\
+         \x20 inheritFromParent: false\n\
+         \x20 rules:\n\
+         \x20 - values:\n\
+         \x20     allowedValues:\n\
+         \x20     - https://token.actions.githubusercontent.com\n\
+         EOF"
+    ))
 }
 
 fn ensure_service_account(exec: &Exec, plan: &Plan) -> Result<()> {
