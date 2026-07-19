@@ -74,7 +74,12 @@ steps:
       storage: gcs
       gcs-bucket: company-coverage
       gcs-prefix: badgers/repos/jubilee-works/timetree-planner-server
+      markdown-summary: true
 ```
+
+`markdown-summary` is opt-in. When enabled, Badgers adds a navigable coverage
+report to the GitHub Actions job summary and uploads the same report as the
+`coverage-markdown` artifact. The existing HTML artifact is still produced.
 
 ## Status
 
