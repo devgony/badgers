@@ -47,10 +47,25 @@ tr:target td { outline: 2px solid #0969da; }
 .uncovered-links a { margin-right: 6px; }
 .notice { background: #fff8c5; border: 1px solid rgba(212,167,44,.4); border-radius: 8px;
           padding: 10px 14px; font-size: 13px; color: #4d2d00; margin-bottom: 12px; }
+.tree { background: #fff; border: 1px solid #d0d7de; border-radius: 8px;
+        overflow: hidden; font-size: 13px; }
+.tree .row { display: grid; align-items: center;
+             grid-template-columns: minmax(220px,1fr) 80px 80px 150px 110px 140px;
+             border-bottom: 1px solid #eaeef2; }
+.tree .cell { padding: 6px 12px; text-align: right; white-space: nowrap;
+              overflow: hidden; text-overflow: ellipsis; }
+.tree .cell.name { text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.tree .row.header { background: #f6f8fa; font-weight: 600; color: #57606a; }
+.tree .row.header .cell { padding: 8px 12px; }
+.tree summary.row { cursor: pointer; list-style: none; background: #f6f8fa; font-weight: 600; }
+.tree summary.row::-webkit-details-marker { display: none; }
+.tree summary .name::before { content: "▸ "; color: #57606a; }
+.tree details[open] > summary .name::before { content: "▾ "; }
+.tree summary.row:hover, .tree .row.file:hover { background: #eaeef2; }
 </style></head>
 <body>
 <header><h1>🦡 Badgers Coverage Report</h1>
-<div class="meta">devgony/badgers @ 59d9eed · generated 2026-07-19T05:11:08.399209246Z</div></header>
+<div class="meta">devgony/badgers @ 4aee791 · generated 2026-07-19T05:36:24.763455097Z</div></header>
 <main>
 <div class="cards">
 <div class="card"><div class="label">Total line coverage</div>
@@ -60,12 +75,27 @@ tr:target td { outline: 2px solid #0969da; }
 <div class="value">83.33%</div>
 <div class="sub">5/6 changed executable lines</div></div>
 </div>
-<table>
-<thead><tr><th class="path">File</th><th>Lines</th><th>Covered</th>
-<th>Coverage</th><th>Δ</th><th>Diff coverage</th></tr></thead>
-<tbody>
-<tr><td class="path"><a href="file-0.html">pkg/__init__.py</a></td><td>0</td><td>0</td><td><span class="flat">no executable lines</span></td><td><span class="flat">n/a</span></td><td>–</td></tr>
-<tr><td class="path"><a href="file-1.html">pkg/calc.py</a></td><td>24</td><td>21</td><td>87.50%</td><td><span class="up">+20.83%p</span></td><td>5/6 (83.33%)</td></tr>
+<div class="tree">
+<div class="row header">
+<span class="cell name">File</span><span class="cell">Lines</span>
+<span class="cell">Covered</span><span class="cell">Coverage</span>
+<span class="cell">Δ</span><span class="cell">Diff coverage</span></div>
+<details class="dirnode" open><summary class="row dir">
+<span class="cell name" style="padding-left:12px">pkg/</span>
+<span class="cell">24</span><span class="cell">21</span>
+<span class="cell">87.50%</span><span class="cell"><span class="up">+20.83%p</span></span>
+<span class="cell">5/6 (83.33%)</span></summary>
+<div class="row file">
+<span class="cell name" style="padding-left:48px"><a href="file-0.html">__init__.py</a></span>
+<span class="cell">0</span><span class="cell">0</span>
+<span class="cell"><span class="flat">no executable lines</span></span><span class="cell"><span class="flat">n/a</span></span>
+<span class="cell">–</span></div>
+<div class="row file">
+<span class="cell name" style="padding-left:48px"><a href="file-1.html">calc.py</a></span>
+<span class="cell">24</span><span class="cell">21</span>
+<span class="cell">87.50%</span><span class="cell"><span class="up">+20.83%p</span></span>
+<span class="cell">5/6 (83.33%)</span></div>
+</details>
 
-</tbody></table>
+</div>
 </main></body></html>

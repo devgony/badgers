@@ -47,6 +47,21 @@ tr:target td { outline: 2px solid #0969da; }
 .uncovered-links a { margin-right: 6px; }
 .notice { background: #fff8c5; border: 1px solid rgba(212,167,44,.4); border-radius: 8px;
           padding: 10px 14px; font-size: 13px; color: #4d2d00; margin-bottom: 12px; }
+.tree { background: #fff; border: 1px solid #d0d7de; border-radius: 8px;
+        overflow: hidden; font-size: 13px; }
+.tree .row { display: grid; align-items: center;
+             grid-template-columns: minmax(220px,1fr) 80px 80px 150px 110px 140px;
+             border-bottom: 1px solid #eaeef2; }
+.tree .cell { padding: 6px 12px; text-align: right; white-space: nowrap;
+              overflow: hidden; text-overflow: ellipsis; }
+.tree .cell.name { text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.tree .row.header { background: #f6f8fa; font-weight: 600; color: #57606a; }
+.tree .row.header .cell { padding: 8px 12px; }
+.tree summary.row { cursor: pointer; list-style: none; background: #f6f8fa; font-weight: 600; }
+.tree summary.row::-webkit-details-marker { display: none; }
+.tree summary .name::before { content: "▸ "; color: #57606a; }
+.tree details[open] > summary .name::before { content: "▾ "; }
+.tree summary.row:hover, .tree .row.file:hover { background: #eaeef2; }
 </style></head>
 <body>
 <header><h1>pkg/__init__.py</h1>
