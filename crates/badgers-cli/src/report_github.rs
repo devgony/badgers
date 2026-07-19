@@ -49,6 +49,14 @@ pub struct GithubArgs {
     #[arg(long)]
     pub report_url: Option<String>,
 
+    /// Link to the durable detailed Markdown coverage report
+    #[arg(long)]
+    pub markdown_report_url: Option<String>,
+
+    /// Link to the pull request's Files changed view and annotations
+    #[arg(long)]
+    pub files_changed_url: Option<String>,
+
     /// Emit a warning instead of failing when the comment cannot be posted
     #[arg(long)]
     pub soft_fail: bool,
@@ -63,6 +71,10 @@ pub struct GithubArgs {
 }
 
 pub fn run(args: &GithubArgs) -> Result<()> {
+    validate_navigation_url(args.markdown_report_url.as_deref(), "Markdown report URL")?;
+    validate_navigation_url(args.files_changed_url.as_deref(), "Files changed URL")?;
+    validate_report_url(args.report_url.as_deref())?;
+
     let head = read_snapshot(&args.head)?;
     let base = args.base.as_deref().map(read_snapshot).transpose()?;
     let changed = match &args.git_diff {
@@ -192,6 +204,46 @@ fn github_api_url() -> Result<String> {
     Ok(url)
 }
 
+fn validate_navigation_url(url: Option<&str>, label: &str) -> Result<()> {
+    let Some(url) = url else {
+        return Ok(());
+    };
+    let Some(rest) = url.strip_prefix("https://") else {
+        bail!("{label} must use https://");
+    };
+    let authority = rest.split('/').next().unwrap_or_default();
+    if authority.is_empty()
+        || authority.contains('@')
+        || url.contains(['?', '#'])
+        || url
+            .chars()
+            .any(|ch| ch.is_control() || ch.is_whitespace() || matches!(ch, '"' | '<' | '>'))
+    {
+        bail!("{label} contains unsafe characters or components");
+    }
+    Ok(())
+}
+
+fn validate_report_url(url: Option<&str>) -> Result<()> {
+    let Some(url) = url else {
+        return Ok(());
+    };
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .context("HTML report URL must use http:// or https://")?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.is_empty()
+        || authority.contains('@')
+        || url
+            .chars()
+            .any(|ch| ch.is_control() || ch.is_whitespace() || matches!(ch, '"' | '<' | '>'))
+    {
+        bail!("HTML report URL contains unsafe characters or components");
+    }
+    Ok(())
+}
+
 const MAX_CHECK_ANNOTATIONS: usize = 1_000;
 
 fn build_annotations(comparison: &Comparison, path_prefix: &str) -> (Vec<CheckAnnotation>, usize) {
@@ -262,9 +314,31 @@ fn render_comment(marker: &str, comparison: &Comparison, args: &GithubArgs) -> S
 
     render_uncovered(&mut out, comparison);
 
-    if let Some(url) = &args.report_url {
+    let mut links = Vec::new();
+    if let Some(url) = args
+        .markdown_report_url
+        .as_deref()
+        .filter(|url| validate_navigation_url(Some(url), "Markdown report URL").is_ok())
+    {
+        links.push(html_link(url, "Detailed coverage report"));
+    }
+    if let Some(url) = args
+        .files_changed_url
+        .as_deref()
+        .filter(|url| validate_navigation_url(Some(url), "Files changed URL").is_ok())
+    {
+        links.push(html_link(url, "Files changed annotations"));
+    }
+    if let Some(url) = args
+        .report_url
+        .as_deref()
+        .filter(|url| validate_report_url(Some(url)).is_ok())
+    {
+        links.push(html_link(url, "HTML report"));
+    }
+    if !links.is_empty() {
         let _ = writeln!(out);
-        let _ = writeln!(out, "**HTML report**: {url}");
+        let _ = writeln!(out, "**Reports:** {}", links.join(" · "));
     }
     out
 }
@@ -355,6 +429,15 @@ fn markdown_code_path(path: &str) -> String {
     format!("<code>{escaped}</code>")
 }
 
+fn html_link(url: &str, label: &str) -> String {
+    let escaped = url
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;");
+    format!("<a href=\"{escaped}\">{label}</a>")
+}
+
 fn fmt_pct(pct: Option<f64>) -> String {
     match pct {
         Some(p) => format!("{p:.2}%"),
@@ -393,6 +476,8 @@ mod tests {
             head_sha: Some("def5678901234".into()),
             baseline_label: Some("exact abc1234".into()),
             report_url: Some("https://example.com/report".into()),
+            markdown_report_url: Some("https://example.com/report.md".into()),
+            files_changed_url: Some("https://github.com/owner/repo/pull/5/files".into()),
             soft_fail: false,
             skip_comment: false,
             check_annotations: false,
@@ -430,7 +515,9 @@ mod tests {
         assert!(body.contains("**Baseline**: exact abc1234 · **Head**: `def5678`"));
         assert!(body.contains("Uncovered changed lines (4)"));
         assert!(body.contains("- <code>pkg/calc.py</code>: L5-L7, L12"));
-        assert!(body.contains("**HTML report**: https://example.com/report"));
+        assert!(body.contains(
+            "**Reports:** <a href=\"https://example.com/report.md\">Detailed coverage report</a> · <a href=\"https://github.com/owner/repo/pull/5/files\">Files changed annotations</a> · <a href=\"https://example.com/report\">HTML report</a>"
+        ));
     }
 
     #[test]
@@ -446,6 +533,8 @@ mod tests {
         let mut a = args();
         a.baseline_label = None;
         a.report_url = None;
+        a.markdown_report_url = None;
+        a.files_changed_url = None;
         let body = render_comment("<!-- m -->", &cmp, &a);
         assert!(body.contains("n/a (no baseline)"));
         assert!(body.contains("no measurable changed lines"));
@@ -493,5 +582,33 @@ mod tests {
         let (annotations, total) = build_annotations(&cmp, "");
         assert_eq!(annotations.len(), MAX_CHECK_ANNOTATIONS);
         assert_eq!(total, MAX_CHECK_ANNOTATIONS + 1);
+    }
+
+    #[test]
+    fn rejects_unsafe_navigation_urls() {
+        assert!(validate_navigation_url(Some("http://example.com"), "report URL").is_err());
+        assert!(
+            validate_navigation_url(Some("https://user@example.com/report"), "report URL").is_err()
+        );
+        assert!(
+            validate_navigation_url(Some("https://example.com/report#fragment"), "report URL")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn preserves_legacy_html_report_url_compatibility_and_escapes_links() {
+        let mut a = args();
+        a.markdown_report_url = None;
+        a.files_changed_url = None;
+        a.report_url = Some("http://example.com/report?view=full&tab=files#summary".into());
+        assert!(validate_report_url(a.report_url.as_deref()).is_ok());
+
+        let body = render_comment("<!-- m -->", &comparison(), &a);
+        assert!(body.contains(
+            "<a href=\"http://example.com/report?view=full&amp;tab=files#summary\">HTML report</a>"
+        ));
+        assert!(validate_report_url(Some("javascript:alert(1)")).is_err());
+        assert!(validate_report_url(Some("https://user@example.com/report")).is_err());
     }
 }
