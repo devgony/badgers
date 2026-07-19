@@ -2,10 +2,7 @@ use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 
 /// Everything except `[A-Za-z0-9._-]` is escaped, so encoding is reversible
 /// and collision-free (unlike `__` substitution, where `a/b` and `a__b` clash).
-const BRANCH_ESCAPE: &AsciiSet = &NON_ALPHANUMERIC
-    .remove(b'.')
-    .remove(b'_')
-    .remove(b'-');
+const BRANCH_ESCAPE: &AsciiSet = &NON_ALPHANUMERIC.remove(b'.').remove(b'_').remove(b'-');
 
 pub fn encode_branch(branch: &str) -> String {
     utf8_percent_encode(branch, BRANCH_ESCAPE).to_string()

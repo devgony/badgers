@@ -277,9 +277,8 @@ mod tests {
             snapshot_key: "commits/abc/coverage.json.zst".to_string(),
             updated_at: "2026-07-19T00:00:00Z".to_string(),
         };
-        let err =
-            update_pointer_if_newer(&backend(&server), "refs/main/latest.json", &pointer)
-                .unwrap_err();
+        let err = update_pointer_if_newer(&backend(&server), "refs/main/latest.json", &pointer)
+            .unwrap_err();
         assert!(matches!(err, StorageError::PreconditionFailed { .. }));
         put.assert_hits(3);
     }
