@@ -1,11 +1,12 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use std::process::Command;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use badge_rs_core::compare::{ChangedLines, Comparison, compare};
 use badge_rs_core::coverage_pct;
 use badge_rs_core::diff::parse_unified_diff;
-use badge_rs_github::{CommentAction, GithubClient};
+use badge_rs_github::{CheckAnnotation, CommentAction, GithubClient};
 use clap::Args;
 
 use crate::report::{git_diff_output, read_snapshot};
@@ -51,6 +52,14 @@ pub struct GithubArgs {
     /// Emit a warning instead of failing when the comment cannot be posted
     #[arg(long)]
     pub soft_fail: bool,
+
+    /// Skip the marker-based pull request comment
+    #[arg(long)]
+    pub skip_comment: bool,
+
+    /// Publish a GitHub check run with uncovered changed-line annotations
+    #[arg(long)]
+    pub check_annotations: bool,
 }
 
 pub fn run(args: &GithubArgs) -> Result<()> {
@@ -66,16 +75,143 @@ pub fn run(args: &GithubArgs) -> Result<()> {
     let body = render_comment(&marker, &comparison, args);
 
     let token = std::env::var("GITHUB_TOKEN").context("GITHUB_TOKEN is required")?;
-    let client = GithubClient::new(args.repo.clone(), token);
-    match client.upsert_pr_comment(args.pr, &marker, &body) {
-        Ok(CommentAction::Created) => println!("comment created on PR #{}", args.pr),
-        Ok(CommentAction::Updated) => println!("comment updated on PR #{}", args.pr),
-        Err(e) if args.soft_fail => {
-            println!("::warning::badgers could not post the PR comment: {e}");
+    let client = GithubClient::with_base_url(args.repo.clone(), token, github_api_url()?);
+    if !args.skip_comment {
+        match client.upsert_pr_comment(args.pr, &marker, &body) {
+            Ok(CommentAction::Created) => println!("comment created on PR #{}", args.pr),
+            Ok(CommentAction::Updated) => println!("comment updated on PR #{}", args.pr),
+            Err(e) if args.soft_fail => {
+                println!("::warning::badgers could not post the PR comment: {e}");
+            }
+            Err(e) => return Err(e.into()),
         }
-        Err(e) => return Err(e.into()),
+    }
+
+    if args.check_annotations {
+        let head_sha = args
+            .head_sha
+            .as_deref()
+            .context("--head-sha is required with --check-annotations")?;
+        let analyzed_sha = git_head_sha(&args.repo_root)?;
+        if analyzed_sha != head_sha {
+            let message = format!(
+                "analyzed commit {analyzed_sha} does not match annotation head {head_sha}; check annotations skipped"
+            );
+            if args.soft_fail {
+                println!("::warning::{message}");
+            } else {
+                bail!(message);
+            }
+        } else {
+            let prefix = git_path_prefix(&args.repo_root)?;
+            let (annotations, total_ranges) = build_annotations(&comparison, &prefix);
+            let uncovered_lines: usize = comparison
+                .files
+                .iter()
+                .map(|file| file.diff.uncovered_lines.len())
+                .sum();
+            let title = if annotations.is_empty() {
+                "All changed executable lines are covered"
+            } else {
+                "Changed executable lines need coverage"
+            };
+            let truncation = if total_ranges > annotations.len() {
+                format!(" Limited to the first {} ranges.", annotations.len())
+            } else {
+                String::new()
+            };
+            let summary = format!(
+                "{uncovered_lines} uncovered changed executable lines across {total_ranges} annotation ranges.{truncation}"
+            );
+            match client.create_check_run(
+                "Badgers diff coverage",
+                head_sha,
+                title,
+                &summary,
+                &annotations,
+            ) {
+                Ok(id) => println!(
+                    "check run created: {id} ({} annotations)",
+                    annotations.len()
+                ),
+                Err(e) if args.soft_fail => {
+                    println!("::warning::badgers could not publish check annotations: {e}");
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
     }
     Ok(())
+}
+
+fn git_path_prefix(repo_root: &std::path::Path) -> Result<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rev-parse", "--show-prefix"])
+        .output()
+        .context("failed to invoke git for repository path prefix")?;
+    if !output.status.success() {
+        bail!(
+            "`git rev-parse --show-prefix` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn git_head_sha(repo_root: &std::path::Path) -> Result<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .context("failed to invoke git for analyzed commit SHA")?;
+    if !output.status.success() {
+        bail!(
+            "`git rev-parse HEAD` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn github_api_url() -> Result<String> {
+    let url =
+        std::env::var("GITHUB_API_URL").unwrap_or_else(|_| "https://api.github.com".to_string());
+    let Some(rest) = url.strip_prefix("https://") else {
+        bail!("GITHUB_API_URL must use https://");
+    };
+    let authority = rest.split('/').next().unwrap_or_default();
+    if authority.is_empty()
+        || authority.contains('@')
+        || url.chars().any(|ch| ch.is_control() || ch.is_whitespace())
+    {
+        bail!("GITHUB_API_URL contains unsafe components");
+    }
+    Ok(url)
+}
+
+const MAX_CHECK_ANNOTATIONS: usize = 1_000;
+
+fn build_annotations(comparison: &Comparison, path_prefix: &str) -> (Vec<CheckAnnotation>, usize) {
+    let prefix = path_prefix.trim_matches('/');
+    let all = comparison
+        .files
+        .iter()
+        .flat_map(|file| {
+            let path = if prefix.is_empty() {
+                file.path.clone()
+            } else {
+                format!("{prefix}/{}", file.path)
+            };
+            line_number_ranges(&file.diff.uncovered_lines)
+                .into_iter()
+                .map(move |(start, end)| CheckAnnotation::warning(path.clone(), start, end))
+        })
+        .collect::<Vec<_>>();
+    let total = all.len();
+    (all.into_iter().take(MAX_CHECK_ANNOTATIONS).collect(), total)
 }
 
 fn render_comment(marker: &str, comparison: &Comparison, args: &GithubArgs) -> String {
@@ -159,12 +295,25 @@ fn render_uncovered(out: &mut String, comparison: &Comparison) {
         } else {
             String::new()
         };
-        let _ = writeln!(out, "- `{}`: {}{}", file.path, shown.join(", "), suffix);
+        let _ = writeln!(
+            out,
+            "- {}: {}{}",
+            markdown_code_path(&file.path),
+            shown.join(", "),
+            suffix
+        );
     }
     let _ = writeln!(out, "</details>");
 }
 
 fn line_ranges(lines: &[u32]) -> Vec<String> {
+    line_number_ranges(lines)
+        .into_iter()
+        .map(|(start, end)| fmt_range(start, end))
+        .collect()
+}
+
+fn line_number_ranges(lines: &[u32]) -> Vec<(u32, u32)> {
     let mut ranges = Vec::new();
     let mut iter = lines.iter().copied();
     let Some(mut start) = iter.next() else {
@@ -172,15 +321,15 @@ fn line_ranges(lines: &[u32]) -> Vec<String> {
     };
     let mut end = start;
     for line in iter {
-        if line == end + 1 {
+        if line == end.saturating_add(1) {
             end = line;
         } else {
-            ranges.push(fmt_range(start, end));
+            ranges.push((start, end));
             start = line;
             end = line;
         }
     }
-    ranges.push(fmt_range(start, end));
+    ranges.push((start, end));
     ranges
 }
 
@@ -190,6 +339,20 @@ fn fmt_range(start: u32, end: u32) -> String {
     } else {
         format!("L{start}-L{end}")
     }
+}
+
+fn markdown_code_path(path: &str) -> String {
+    let mut escaped = String::new();
+    for ch in path.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '-' | ' ') {
+            escaped.push(ch);
+        } else if ch.is_ascii() {
+            let _ = write!(escaped, "&#x{:X};", u32::from(ch));
+        } else {
+            escaped.push(ch);
+        }
+    }
+    format!("<code>{escaped}</code>")
 }
 
 fn fmt_pct(pct: Option<f64>) -> String {
@@ -209,8 +372,8 @@ fn fmt_delta(delta: Option<f64>, base_available: bool) -> String {
     }
 }
 
-fn short_sha(sha: &str) -> &str {
-    &sha[..sha.len().min(7)]
+fn short_sha(sha: &str) -> String {
+    sha.chars().take(7).collect()
 }
 
 #[cfg(test)]
@@ -231,6 +394,8 @@ mod tests {
             baseline_label: Some("exact abc1234".into()),
             report_url: Some("https://example.com/report".into()),
             soft_fail: false,
+            skip_comment: false,
+            check_annotations: false,
         }
     }
 
@@ -264,7 +429,7 @@ mod tests {
         assert!(body.contains("| **Diff** | 33.33% (1/3) | |"));
         assert!(body.contains("**Baseline**: exact abc1234 · **Head**: `def5678`"));
         assert!(body.contains("Uncovered changed lines (4)"));
-        assert!(body.contains("- `pkg/calc.py`: L5-L7, L12"));
+        assert!(body.contains("- <code>pkg/calc.py</code>: L5-L7, L12"));
         assert!(body.contains("**HTML report**: https://example.com/report"));
     }
 
@@ -295,5 +460,38 @@ mod tests {
         cmp.files[0].diff.uncovered_lines = (0..30).map(|i| i * 2 + 1).collect();
         let body = render_comment("<!-- m -->", &cmp, &args());
         assert!(body.contains("… and 20 more"));
+    }
+
+    #[test]
+    fn builds_repo_relative_annotations_from_contiguous_ranges() {
+        let (annotations, total) = build_annotations(&comparison(), "examples/python-sample/");
+        assert_eq!(total, 2);
+        assert_eq!(annotations.len(), 2);
+        assert_eq!(annotations[0].path, "examples/python-sample/pkg/calc.py");
+        assert_eq!((annotations[0].start_line, annotations[0].end_line), (5, 7));
+        assert_eq!(
+            (annotations[1].start_line, annotations[1].end_line),
+            (12, 12)
+        );
+        assert_eq!(annotations[0].annotation_level, "warning");
+    }
+
+    #[test]
+    fn escapes_markdown_in_comment_paths() {
+        assert_eq!(
+            markdown_code_path("pkg/a`b_[x].py"),
+            "<code>pkg/a&#x60;b&#x5F;&#x5B;x&#x5D;.py</code>"
+        );
+    }
+
+    #[test]
+    fn caps_check_annotation_ranges() {
+        let mut cmp = comparison();
+        cmp.files[0].diff.uncovered_lines = (0..=MAX_CHECK_ANNOTATIONS)
+            .map(|index| u32::try_from(index * 2 + 1).unwrap())
+            .collect();
+        let (annotations, total) = build_annotations(&cmp, "");
+        assert_eq!(annotations.len(), MAX_CHECK_ANNOTATIONS);
+        assert_eq!(total, MAX_CHECK_ANNOTATIONS + 1);
     }
 }
