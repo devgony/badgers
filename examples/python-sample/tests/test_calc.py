@@ -16,6 +16,9 @@ class CalcTest(unittest.TestCase):
     def test_clamp_low(self):
         self.assertEqual(clamp(-5, 0, 10), 0)
 
+    def test_clamp_high(self):
+        self.assertEqual(clamp(99, 0, 10), 10)
+
     def test_fizzbuzz(self):
         self.assertEqual(fizzbuzz(3), "fizz")
         self.assertEqual(fizzbuzz(5), "buzz")
