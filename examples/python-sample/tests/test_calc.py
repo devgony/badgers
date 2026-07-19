@@ -1,6 +1,6 @@
 import unittest
 
-from pkg.calc import add, classify, fizzbuzz
+from pkg.calc import add, clamp, classify, fizzbuzz
 
 
 class CalcTest(unittest.TestCase):
@@ -12,6 +12,9 @@ class CalcTest(unittest.TestCase):
 
     def test_classify_negative(self):
         self.assertEqual(classify(-3), "negative")
+
+    def test_clamp_low(self):
+        self.assertEqual(clamp(-5, 0, 10), 0)
 
     def test_fizzbuzz(self):
         self.assertEqual(fizzbuzz(3), "fizz")

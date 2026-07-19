@@ -14,6 +14,14 @@ def classify(n):
     return "zero"
 
 
+def clamp(n, lo, hi):
+    if n < lo:
+        return lo
+    if n > hi:
+        return hi
+    return n
+
+
 def fizzbuzz(n):
     if n % 15 == 0:
         return "fizzbuzz"
