@@ -1,0 +1,12 @@
+[package]
+name = "badgers-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core coverage data model for badgers"
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

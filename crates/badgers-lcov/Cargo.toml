@@ -1,0 +1,10 @@
+[package]
+name = "badgers-lcov"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LCOV parser producing badgers coverage models"
+
+[dependencies]
+badgers-core = { workspace = true }
+thiserror = { workspace = true }

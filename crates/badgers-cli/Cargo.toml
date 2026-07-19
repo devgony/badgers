@@ -1,0 +1,22 @@
+[package]
+name = "badgers-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "badgers command line interface"
+
+[[bin]]
+name = "badgers"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+badgers-core = { workspace = true }
+badgers-lcov = { workspace = true }
+clap = { workspace = true }
+jiff = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
