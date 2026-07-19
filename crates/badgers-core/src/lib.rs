@@ -4,6 +4,9 @@
 //! snapshot schema and pure computations on top of it (totals, percentages,
 //! normalization invariants).
 
+pub mod compare;
+pub mod diff;
+
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 

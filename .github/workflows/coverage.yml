@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -45,7 +47,48 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Build baseline snapshot from merge-base
+        if: github.event_name == 'pull_request'
+        run: |
+          MERGE_BASE=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+          echo "merge-base: $MERGE_BASE"
+          git worktree add /tmp/base-checkout "$MERGE_BASE"
+          cd /tmp/base-checkout/examples/python-sample
+          python -m coverage run -m unittest discover
+          "$GITHUB_WORKSPACE/target/release/badgers" collect python \
+            --repo-root . -o /tmp/base-snapshot.json
+
+      - name: Generate HTML report (PR, with baseline)
+        if: github.event_name == 'pull_request'
+        working-directory: examples/python-sample
+        run: |
+          "$GITHUB_WORKSPACE/target/release/badgers" report html \
+            --head coverage-snapshot.json \
+            --base /tmp/base-snapshot.json \
+            --git-diff "origin/${{ github.base_ref }}...HEAD" \
+            --repo-root . -o coverage-report
+
+      - name: Generate HTML report (push, head only)
+        if: github.event_name == 'push'
+        working-directory: examples/python-sample
+        run: |
+          "$GITHUB_WORKSPACE/target/release/badgers" report html \
+            --head coverage-snapshot.json \
+            --repo-root . -o coverage-report
+
       - uses: actions/upload-artifact@v4
         with:
           name: coverage-snapshot
           path: examples/python-sample/coverage-snapshot.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: examples/python-sample/coverage-report/
+
+      - name: Link report in summary
+        run: |
+          {
+            echo ''
+            echo '**HTML report**: download the `coverage-report` artifact below and open `index.html`.'
+          } >> "$GITHUB_STEP_SUMMARY"
