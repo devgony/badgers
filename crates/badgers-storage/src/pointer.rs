@@ -21,6 +21,8 @@ pub struct BranchPointer {
     pub comparison_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub html_prefix: Option<String>,
     pub updated_at: String,
 }
 
@@ -104,6 +106,7 @@ mod tests {
             snapshot_key: format!("badgers/repos/o/r/commits/{sha}/coverage.json.zst"),
             comparison_key: None,
             report_key: None,
+            html_prefix: None,
             updated_at: "2026-07-19T00:00:00Z".to_string(),
         }
     }
@@ -167,5 +170,6 @@ mod tests {
         let pointer: BranchPointer = serde_json::from_slice(json).unwrap();
         assert_eq!(pointer.comparison_key, None);
         assert_eq!(pointer.report_key, None);
+        assert_eq!(pointer.html_prefix, None);
     }
 }
