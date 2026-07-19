@@ -45,6 +45,14 @@ impl Keys {
         format!("{}/commits/{sha}/README.md", self.root)
     }
 
+    /// Prefix under which all HTML report files for a commit are stored.
+    ///
+    /// Individual files are stored as `{prefix}/{relative_path}`.
+    /// Example: `badgers/repos/owner/repo/commits/{sha}/html`
+    pub fn commit_html_prefix(&self, sha: &str) -> String {
+        format!("{}/commits/{sha}/html", self.root)
+    }
+
     pub fn branch_pointer(&self, branch: &str) -> String {
         format!("{}/refs/{}/latest.json", self.root, encode_branch(branch))
     }
@@ -104,6 +112,10 @@ mod tests {
         assert_eq!(
             keys.pr_report(547),
             "badgers/repos/owner/repo/prs/547/README.md"
+        );
+        assert_eq!(
+            keys.commit_html_prefix("abc123"),
+            "badgers/repos/owner/repo/commits/abc123/html"
         );
     }
 
