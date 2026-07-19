@@ -61,14 +61,14 @@ pub fn run(args: &HtmlArgs) -> Result<()> {
     Ok(())
 }
 
-fn read_snapshot(path: &Path) -> Result<CoverageSnapshot> {
+pub(crate) fn read_snapshot(path: &Path) -> Result<CoverageSnapshot> {
     let text = fs::read_to_string(path)
         .with_context(|| format!("failed to read snapshot '{}'", path.display()))?;
     serde_json::from_str(&text)
         .with_context(|| format!("failed to parse snapshot '{}'", path.display()))
 }
 
-fn git_diff_output(repo_root: &Path, range: &str) -> Result<String> {
+pub(crate) fn git_diff_output(repo_root: &Path, range: &str) -> Result<String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_root)
