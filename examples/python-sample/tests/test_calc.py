@@ -10,6 +10,9 @@ class CalcTest(unittest.TestCase):
     def test_classify_positive(self):
         self.assertEqual(classify(5), "positive")
 
+    def test_classify_negative(self):
+        self.assertEqual(classify(-3), "negative")
+
     def test_fizzbuzz(self):
         self.assertEqual(fizzbuzz(3), "fizz")
         self.assertEqual(fizzbuzz(7), "7")
