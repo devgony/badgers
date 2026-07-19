@@ -13,6 +13,7 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 badgers-core = { workspace = true }
 badgers-lcov = { workspace = true }
+badgers-github = { workspace = true }
 badgers-storage = { workspace = true }
 clap = { workspace = true }
 jiff = { workspace = true }

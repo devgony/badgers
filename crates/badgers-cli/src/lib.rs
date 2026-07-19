@@ -1,6 +1,7 @@
 mod baseline_fetch;
 mod python;
 mod report;
+mod report_github;
 mod snapshot_push;
 mod storage_opts;
 mod summary;
@@ -38,6 +39,7 @@ pub enum CollectCommand {
 #[derive(Subcommand)]
 pub enum ReportCommand {
     Html(report::HtmlArgs),
+    Github(report_github::GithubArgs),
 }
 
 #[derive(Subcommand)]
@@ -54,6 +56,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Collect(CollectCommand::Python(args)) => python::run(&args),
         Command::Report(ReportCommand::Html(args)) => report::run(&args),
+        Command::Report(ReportCommand::Github(args)) => report_github::run(&args),
         Command::Snapshot(SnapshotCommand::Push(args)) => snapshot_push::run(&args),
         Command::Baseline(BaselineCommand::Fetch(args)) => baseline_fetch::run(&args),
     }
