@@ -29,17 +29,17 @@ pub struct CheckAnnotation {
 
 impl CheckAnnotation {
     pub fn warning(path: impl Into<String>, start_line: u32, end_line: u32) -> Self {
-        let lines = if start_line == end_line {
-            format!("line {start_line}")
+        let (lines, verb) = if start_line == end_line {
+            (format!("line {start_line}"), "is")
         } else {
-            format!("lines {start_line}-{end_line}")
+            (format!("lines {start_line}-{end_line}"), "are")
         };
         Self {
             path: path.into(),
             start_line,
             end_line,
             annotation_level: "warning",
-            message: format!("Changed executable {lines} are not covered."),
+            message: format!("Changed executable {lines} {verb} not covered."),
             title: "Uncovered changed lines".to_string(),
         }
     }
@@ -366,5 +366,17 @@ mod tests {
             .unwrap();
         assert_eq!(id, 7);
         create.assert();
+    }
+
+    #[test]
+    fn annotation_messages_agree_with_line_ranges() {
+        assert_eq!(
+            CheckAnnotation::warning("src/lib.rs", 7, 7).message,
+            "Changed executable line 7 is not covered."
+        );
+        assert_eq!(
+            CheckAnnotation::warning("src/lib.rs", 7, 9).message,
+            "Changed executable lines 7-9 are not covered."
+        );
     }
 }
