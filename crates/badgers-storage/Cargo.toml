@@ -1,0 +1,18 @@
+[package]
+name = "badgers-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Storage backends (GCS, local filesystem) for badgers coverage snapshots"
+
+[dependencies]
+jiff = { workspace = true }
+percent-encoding = "2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+httpmock = "0.7"
+tempfile = "3"
