@@ -1,6 +1,6 @@
 [package]
 name = "badge-rs"
-version.workspace = true
+version = "0.1.1"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -13,10 +13,10 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
-badgers-core = { workspace = true }
-badgers-lcov = { workspace = true }
-badgers-github = { workspace = true }
-badgers-storage = { workspace = true }
+badge-rs-core = { workspace = true }
+badge-rs-lcov = { workspace = true }
+badge-rs-github = { workspace = true }
+badge-rs-storage = { workspace = true }
 clap = { workspace = true }
 jiff = { workspace = true }
 serde_json = { workspace = true }
