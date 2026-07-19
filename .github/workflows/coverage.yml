@@ -34,5 +34,6 @@ jobs:
           coverage-command: python -m coverage run -m unittest discover
           github-storage-repo: devgony/badgers
           github-storage-branch: coverage-storage
+          github-storage-retention: latest
           markdown-summary: true
           pages: true
