@@ -63,6 +63,8 @@ fn report_markdown_renders_hierarchy_and_source_links() {
         .arg(dir.join("changes.diff"))
         .arg("--source-url")
         .arg("https://github.example/owner/repo/blob/abcdef1")
+        .arg("--files-changed-url")
+        .arg("https://github.example/owner/repo/pull/42/files")
         .arg("--output")
         .arg(&output)
         .arg("--comparison-output")
@@ -84,6 +86,14 @@ fn report_markdown_renders_hierarchy_and_source_links() {
     assert!(markdown.contains(
         "<a href=\"https://github.example/owner/repo/blob/abcdef1/apps/api/calc.py#L6\">L6</a>"
     ));
+    assert!(markdown.contains(
+        "<a href=\"https://github.example/owner/repo/pull/42/files\">Files changed and annotations</a>"
+    ));
+    assert!(markdown.contains("<details open>\n<summary>"));
+    assert!(
+        markdown.find("## Changed executable lines").unwrap()
+            < markdown.find("## Coverage by path").unwrap()
+    );
 
     let comparison: serde_json::Value =
         serde_json::from_slice(&std::fs::read(comparison_output).unwrap()).unwrap();
@@ -140,6 +150,28 @@ fn report_markdown_rejects_unsafe_source_url() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("source URL must use https://"));
+}
+
+#[test]
+fn report_markdown_rejects_unsafe_files_changed_url() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("report-markdown-files-url");
+    let _ = std::fs::remove_dir_all(&dir);
+    write(&dir.join("head.json"), &snapshot_json(""));
+
+    Command::cargo_bin("badgers")
+        .unwrap()
+        .args(["report", "markdown"])
+        .arg("--head")
+        .arg(dir.join("head.json"))
+        .arg("--files-changed-url")
+        .arg("https://example.com/pull/1/files#unsafe")
+        .arg("--output")
+        .arg(dir.join("summary.md"))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Files changed URL contains unsafe characters or components",
+        ));
 }
 
 #[test]

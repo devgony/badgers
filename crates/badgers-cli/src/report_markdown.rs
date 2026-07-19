@@ -40,6 +40,10 @@ pub struct MarkdownArgs {
     #[arg(long)]
     pub source_url: Option<String>,
 
+    /// Link to the pull request's Files changed view
+    #[arg(long)]
+    pub files_changed_url: Option<String>,
+
     /// Output Markdown file
     #[arg(
         short,
@@ -83,9 +87,17 @@ pub fn run(args: &MarkdownArgs) -> Result<()> {
         .clone()
         .or_else(|| default_source_url(&head));
     if let Some(url) = &source_url {
-        validate_source_url(url)?;
+        validate_https_url(url, "source URL")?;
     }
-    let markdown = render(&head, &comparison, source_url.as_deref());
+    if let Some(url) = &args.files_changed_url {
+        validate_https_url(url, "Files changed URL")?;
+    }
+    let markdown = render(
+        &head,
+        &comparison,
+        source_url.as_deref(),
+        args.files_changed_url.as_deref(),
+    );
     fs::write(&args.output, markdown)
         .with_context(|| format!("failed to write '{}'", args.output.display()))?;
     println!("Markdown report written to {}", args.output.display());
@@ -102,9 +114,9 @@ fn default_source_url(head: &CoverageSnapshot) -> Option<String> {
     ))
 }
 
-fn validate_source_url(url: &str) -> Result<()> {
+fn validate_https_url(url: &str, label: &str) -> Result<()> {
     let Some(rest) = url.strip_prefix("https://") else {
-        bail!("source URL must use https://");
+        bail!("{label} must use https://");
     };
     let authority = rest.split('/').next().unwrap_or_default();
     if authority.is_empty()
@@ -114,7 +126,7 @@ fn validate_source_url(url: &str) -> Result<()> {
             .chars()
             .any(|ch| ch.is_control() || ch.is_whitespace() || matches!(ch, '"' | '<' | '>'))
     {
-        bail!("source URL contains unsafe characters or components");
+        bail!("{label} contains unsafe characters or components");
     }
     Ok(())
 }
@@ -211,7 +223,12 @@ fn aggregate(node: &DirNode, files: &[FileDelta]) -> DirAgg {
     agg
 }
 
-fn render(head: &CoverageSnapshot, comparison: &Comparison, source_url: Option<&str>) -> String {
+fn render(
+    head: &CoverageSnapshot,
+    comparison: &Comparison,
+    source_url: Option<&str>,
+    files_changed_url: Option<&str>,
+) -> String {
     let mut out = String::new();
     let totals = comparison.head_totals();
     let diff = comparison.diff_totals();
@@ -221,6 +238,15 @@ fn render(head: &CoverageSnapshot, comparison: &Comparison, source_url: Option<&
         "**Head:** {}\n",
         code_path(&short_sha(&head.commit_sha))
     );
+    if let Some(url) =
+        files_changed_url.filter(|url| validate_https_url(url, "Files changed URL").is_ok())
+    {
+        let _ = writeln!(
+            out,
+            "**Pull request:** {}\n",
+            html_link(url, "Files changed and annotations")
+        );
+    }
     let _ = writeln!(out, "| Scope | Coverage | Δ |");
     let _ = writeln!(out, "|---|---:|---:|");
     let _ = writeln!(
@@ -242,10 +268,10 @@ fn render(head: &CoverageSnapshot, comparison: &Comparison, source_url: Option<&
         root.insert(&file.path.split('/').collect::<Vec<_>>(), idx);
     }
 
+    render_changed_files(comparison, source_url, &mut out);
     let _ = writeln!(out, "## Coverage by path\n");
     render_files(&root.files, comparison, source_url, &mut out);
     render_tree(&root, 0, comparison, source_url, &mut out);
-    render_changed_files(comparison, source_url, &mut out);
     out
 }
 
@@ -331,7 +357,12 @@ fn render_changed_files(comparison: &Comparison, source_url: Option<&str>, out: 
     for file in changed {
         let _ = writeln!(
             out,
-            "<details>\n<summary>{} — {}</summary>\n",
+            "<details{}>\n<summary>{} — {}</summary>\n",
+            if file.diff.uncovered_lines.is_empty() {
+                ""
+            } else {
+                " open"
+            },
             file_link(&file.path, source_url),
             diff_cell(file.diff.covered, file.diff.relevant)
         );
@@ -350,9 +381,9 @@ fn render_changed_files(comparison: &Comparison, source_url: Option<&str>, out: 
 }
 
 fn file_link(path: &str, source_url: Option<&str>) -> String {
-    match source_url
-        .filter(|base| validate_source_url(base).is_ok() && valid_relative_source_path(path))
-    {
+    match source_url.filter(|base| {
+        validate_https_url(base, "source URL").is_ok() && valid_relative_source_path(path)
+    }) {
         Some(base) => {
             let href = format!("{}/{}", base.trim_end_matches('/'), encode_path(path));
             format!(
@@ -371,9 +402,9 @@ fn line_link(path: &str, start: u32, end: u32, source_url: Option<&str>) -> Stri
     } else {
         format!("L{start}-L{end}")
     };
-    match source_url
-        .filter(|base| validate_source_url(base).is_ok() && valid_relative_source_path(path))
-    {
+    match source_url.filter(|base| {
+        validate_https_url(base, "source URL").is_ok() && valid_relative_source_path(path)
+    }) {
         Some(base) => {
             let anchor_end = if start == end {
                 String::new()
@@ -462,6 +493,14 @@ fn html_escape(value: &str) -> String {
 
 fn html_attr_escape(value: &str) -> String {
     html_escape(value).replace('\'', "&#39;")
+}
+
+fn html_link(url: &str, label: &str) -> String {
+    format!(
+        "<a href=\"{}\">{}</a>",
+        html_attr_escape(url),
+        markdown_html_text(label)
+    )
 }
 
 fn markdown_html_text(value: &str) -> String {
@@ -557,9 +596,11 @@ mod tests {
             &snapshot(),
             &comparison,
             Some("https://github.com/owner/repo/blob/abcdef1"),
+            Some("https://github.com/owner/repo/pull/7/files"),
         );
         assert!(markdown.contains("<summary>📁 <strong>apps/</strong>"));
         assert!(markdown.contains("<summary>📁 <strong>api/</strong>"));
+        assert!(markdown.contains("<summary>📁 <strong>src/</strong>"));
         assert!(markdown.contains(
             "<a href=\"https://github.com/owner/repo/blob/abcdef1/apps/api/src/app.py\"><code>apps/api/src/app.py</code></a>"
         ));
@@ -568,6 +609,61 @@ mod tests {
         ));
         assert!(markdown.contains("50.00% (2/4)"));
         assert!(markdown.contains("33.33% (1/3)"));
+        assert!(markdown.contains(
+            "<a href=\"https://github.com/owner/repo/pull/7/files\">Files changed and annotations</a>"
+        ));
+        assert!(markdown.contains("<details open>\n<summary>"));
+        assert!(
+            markdown.find("## Changed executable lines").unwrap()
+                < markdown.find("## Coverage by path").unwrap()
+        );
+    }
+
+    #[test]
+    fn opens_only_changed_files_with_uncovered_lines() {
+        let comparison = Comparison {
+            base_available: false,
+            files: vec![
+                FileDelta {
+                    path: "pkg/uncovered.py".into(),
+                    base: None,
+                    head: Some(Counts {
+                        covered: 1,
+                        executable: 2,
+                    }),
+                    diff: DiffCoverage {
+                        relevant: 2,
+                        covered: 1,
+                        uncovered_lines: vec![2],
+                    },
+                },
+                FileDelta {
+                    path: "pkg/covered.py".into(),
+                    base: None,
+                    head: Some(Counts {
+                        covered: 2,
+                        executable: 2,
+                    }),
+                    diff: DiffCoverage {
+                        relevant: 2,
+                        covered: 2,
+                        uncovered_lines: vec![],
+                    },
+                },
+            ],
+        };
+        let mut markdown = String::new();
+        render_changed_files(&comparison, None, &mut markdown);
+
+        assert!(markdown.contains(
+            "<details open>\n<summary><code>pkg/uncovered.py</code> — 50.00% (1/2)</summary>"
+        ));
+        assert!(
+            markdown.contains(
+                "<details>\n<summary><code>pkg/covered.py</code> — 100.00% (2/2)</summary>"
+            )
+        );
+        assert!(!markdown.contains("<details open>\n<summary><code>pkg/covered.py</code>"));
     }
 
     #[test]
@@ -603,9 +699,9 @@ mod tests {
 
     #[test]
     fn rejects_unsafe_source_urls_and_snapshot_metadata() {
-        assert!(validate_source_url("javascript:alert(1)").is_err());
-        assert!(validate_source_url("https://user@example.com/repo").is_err());
-        assert!(validate_source_url("https://example.com/repo#fragment").is_err());
+        assert!(validate_https_url("javascript:alert(1)", "source URL").is_err());
+        assert!(validate_https_url("https://user@example.com/repo", "source URL").is_err());
+        assert!(validate_https_url("https://example.com/repo#fragment", "source URL").is_err());
 
         let mut invalid = snapshot();
         invalid.repo = "owner/repo/extra".into();
@@ -619,6 +715,7 @@ mod tests {
                 base_available: false,
                 files: vec![],
             },
+            None,
             None,
         );
         assert!(markdown.contains("**Head:** <code>&#x60;&#x5C;n&#x3C;h1&#x3E;🦡</code>"));
