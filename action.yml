@@ -27,6 +27,11 @@ inputs:
   gcs-prefix:
     description: Object key prefix inside the GCS bucket
     default: "badgers"
+  pr-comment:
+    description: >
+      Post/update a coverage summary comment on the PR (marker-based upsert).
+      Requires `pull-requests: write`; posting failures only warn.
+    default: "true"
   pages-branch:
     description: Branch used for GitHub Pages deployment
     default: "gh-pages"
@@ -247,3 +252,47 @@ runs:
           echo "**HTML report**: $REPORT_URL"
         } >> "$GITHUB_STEP_SUMMARY"
         echo "deployed: $REPORT_URL"
+
+    - name: Post coverage comment on PR
+      if: >-
+        github.event_name == 'pull_request' &&
+        inputs.pr-comment == 'true' &&
+        github.event.pull_request.head.repo.full_name == github.repository
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+        BASE_ARGS=()
+        if [ -f /tmp/badgers-base-snapshot.json ]; then
+          BASE_ARGS=(--base /tmp/badgers-base-snapshot.json)
+        fi
+
+        KIND="${{ steps.gcs-baseline.outputs.baseline-kind }}"
+        SHA="${{ steps.gcs-baseline.outputs.baseline-sha }}"
+        if { [ -z "$KIND" ] || [ "$KIND" = "none" ]; } \
+            && [ -f /tmp/badgers-base-snapshot.json ]; then
+          KIND="merge-base rebuild"
+          SHA=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+        fi
+        LABEL_ARGS=()
+        if [ -n "$KIND" ] && [ "$KIND" != "none" ]; then
+          LABEL_ARGS=(--baseline-label "\`${SHA:0:7}\` ($KIND)")
+        fi
+
+        URL_ARGS=()
+        REPORT_URL="${{ steps.pages.outputs.report-url || steps.gcs-report.outputs.report-url }}"
+        if [ -n "$REPORT_URL" ]; then
+          URL_ARGS=(--report-url "$REPORT_URL")
+        fi
+
+        badgers report github \
+          --head coverage-snapshot.json "${BASE_ARGS[@]}" \
+          --git-diff "origin/${{ github.base_ref }}...HEAD" \
+          --repo-root . \
+          --repo "$GITHUB_REPOSITORY" \
+          --pr "${{ github.event.pull_request.number }}" \
+          --head-sha "$(git rev-parse HEAD)" \
+          "${LABEL_ARGS[@]}" "${URL_ARGS[@]}" \
+          --soft-fail

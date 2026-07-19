@@ -9,6 +9,7 @@ on:
 permissions:
   contents: write
   pages: write
+  pull-requests: write
 
 jobs:
   python-coverage:
