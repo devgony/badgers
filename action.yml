@@ -1,8 +1,9 @@
 name: badgers
 description: >
   PR line coverage for Python projects: collects coverage.py results,
-  compares against the merge-base baseline, and publishes an HTML
-  coverage-diff report (artifact always, GitHub Pages opt-in).
+  compares against the merge-base baseline (from GCS history when
+  configured, otherwise rebuilt in a worktree), and publishes an HTML
+  coverage-diff report (artifact always; GitHub Pages or GCS opt-in).
 
 inputs:
   working-directory:
@@ -17,6 +18,15 @@ inputs:
   pages:
     description: Deploy the HTML report to GitHub Pages (gh-pages branch)
     default: "false"
+  gcs-bucket:
+    description: >
+      GCS bucket for snapshot history (baselines without re-running tests)
+      and private PR report hosting. Requires google-github-actions/auth to
+      run first in the calling workflow. Empty disables GCS.
+    default: ""
+  gcs-prefix:
+    description: Object key prefix inside the GCS bucket
+    default: "badgers"
   pages-branch:
     description: Branch used for GitHub Pages deployment
     default: "gh-pages"
@@ -26,8 +36,8 @@ inputs:
 
 outputs:
   report-url:
-    description: URL of the deployed HTML report (empty unless pages=true)
-    value: ${{ steps.pages.outputs.report-url }}
+    description: URL of the deployed HTML report (Pages or GCS; empty when neither is enabled)
+    value: ${{ steps.pages.outputs.report-url || steps.gcs-report.outputs.report-url }}
 
 runs:
   using: composite
@@ -62,8 +72,35 @@ runs:
           echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
 
+    - name: Issue GCS access token
+      if: inputs.gcs-bucket != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        TOKEN=$(gcloud auth print-access-token)
+        echo "::add-mask::$TOKEN"
+        echo "BADGERS_GCS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+    - name: Fetch baseline snapshot from GCS
+      id: gcs-baseline
+      if: github.event_name == 'pull_request' && inputs.gcs-bucket != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        MERGE_BASE=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+        badgers baseline fetch \
+          --merge-base "$MERGE_BASE" \
+          --base-ref "${{ github.base_ref }}" \
+          --bucket "${{ inputs.gcs-bucket }}" \
+          --prefix "${{ inputs.gcs-prefix }}" \
+          --repo "$GITHUB_REPOSITORY" \
+          -o /tmp/badgers-base-snapshot.json | tee -a "$GITHUB_OUTPUT"
+
     - name: Build baseline snapshot from merge-base
-      if: github.event_name == 'pull_request'
+      if: >-
+        github.event_name == 'pull_request' &&
+        steps.gcs-baseline.outputs.baseline-kind != 'exact' &&
+        steps.gcs-baseline.outputs.baseline-kind != 'approximate'
       shell: bash
       run: |
         MERGE_BASE=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
@@ -109,6 +146,47 @@ runs:
       with:
         name: coverage-report
         path: ${{ inputs.working-directory }}/coverage-report/
+
+    - name: Push snapshot to GCS
+      if: inputs.gcs-bucket != ''
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        set -euo pipefail
+        SHA=$(git rev-parse HEAD)
+        COMMITTED_AT=$(git show -s --format=%cI HEAD)
+        REF_ARGS=()
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          REF_ARGS=(--pr "${{ github.event.pull_request.number }}")
+        else
+          REF_ARGS=(--branch "$GITHUB_REF_NAME")
+        fi
+        badgers snapshot push \
+          --snapshot coverage-snapshot.json \
+          --sha "$SHA" \
+          --committed-at "$COMMITTED_AT" \
+          "${REF_ARGS[@]}" \
+          --bucket "${{ inputs.gcs-bucket }}" \
+          --prefix "${{ inputs.gcs-prefix }}" \
+          --repo "$GITHUB_REPOSITORY"
+
+    - name: Upload HTML report to GCS
+      id: gcs-report
+      if: github.event_name == 'pull_request' && inputs.gcs-bucket != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        BASE="${{ inputs.gcs-prefix }}/repos/${GITHUB_REPOSITORY}/prs/${{ github.event.pull_request.number }}/report"
+        gcloud storage rsync --recursive --delete-unmatched-destination-objects \
+          "$GITHUB_WORKSPACE/${{ inputs.working-directory }}/coverage-report" \
+          "gs://${{ inputs.gcs-bucket }}/$BASE"
+        REPORT_URL="https://storage.cloud.google.com/${{ inputs.gcs-bucket }}/$BASE/index.html"
+        echo "report-url=$REPORT_URL" >> "$GITHUB_OUTPUT"
+        {
+          echo ''
+          echo "**HTML report**: $REPORT_URL"
+        } >> "$GITHUB_STEP_SUMMARY"
+        echo "uploaded: $REPORT_URL"
 
     - name: Deploy report to GitHub Pages branch
       id: pages
