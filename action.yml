@@ -3,7 +3,7 @@ description: >
   PR line coverage for Python projects: collects coverage.py results,
   compares against the merge-base baseline (from GCS history when
   configured, otherwise rebuilt in a worktree), and publishes an HTML
-  coverage-diff report (artifact always; GitHub Pages or GCS opt-in).
+  coverage-diff report (artifact always; GitHub Pages opt-in).
 
 inputs:
   working-directory:
@@ -20,9 +20,9 @@ inputs:
     default: "false"
   gcs-bucket:
     description: >
-      GCS bucket for snapshot history (baselines without re-running tests)
-      and private PR report hosting. Requires google-github-actions/auth to
-      run first in the calling workflow. Empty disables GCS.
+      GCS bucket for snapshot history (baselines without re-running tests).
+      Requires google-github-actions/auth to run first in the calling
+      workflow. Empty disables GCS.
     default: ""
   gcs-prefix:
     description: Object key prefix inside the GCS bucket
@@ -41,8 +41,8 @@ inputs:
 
 outputs:
   report-url:
-    description: URL of the deployed HTML report (Pages or GCS; empty when neither is enabled)
-    value: ${{ steps.pages.outputs.report-url || steps.gcs-report.outputs.report-url }}
+    description: URL of the deployed HTML report (empty unless pages=true)
+    value: ${{ steps.pages.outputs.report-url }}
 
 runs:
   using: composite
@@ -175,24 +175,6 @@ runs:
           --prefix "${{ inputs.gcs-prefix }}" \
           --repo "$GITHUB_REPOSITORY"
 
-    - name: Upload HTML report to GCS
-      id: gcs-report
-      if: github.event_name == 'pull_request' && inputs.gcs-bucket != ''
-      shell: bash
-      run: |
-        set -euo pipefail
-        BASE="${{ inputs.gcs-prefix }}/repos/${GITHUB_REPOSITORY}/prs/${{ github.event.pull_request.number }}/report"
-        gcloud storage rsync --recursive --delete-unmatched-destination-objects \
-          "$GITHUB_WORKSPACE/${{ inputs.working-directory }}/coverage-report" \
-          "gs://${{ inputs.gcs-bucket }}/$BASE"
-        REPORT_URL="https://storage.cloud.google.com/${{ inputs.gcs-bucket }}/$BASE/index.html"
-        echo "report-url=$REPORT_URL" >> "$GITHUB_OUTPUT"
-        {
-          echo ''
-          echo "**HTML report**: $REPORT_URL"
-        } >> "$GITHUB_STEP_SUMMARY"
-        echo "uploaded: $REPORT_URL"
-
     - name: Deploy report to GitHub Pages branch
       id: pages
       if: inputs.pages == 'true'
@@ -282,7 +264,7 @@ runs:
         fi
 
         URL_ARGS=()
-        REPORT_URL="${{ steps.pages.outputs.report-url || steps.gcs-report.outputs.report-url }}"
+        REPORT_URL="${{ steps.pages.outputs.report-url }}"
         if [ -n "$REPORT_URL" ]; then
           URL_ARGS=(--report-url "$REPORT_URL")
         fi
