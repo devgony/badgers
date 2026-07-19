@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use anyhow::Context;
 use badge_rs_core::CoverageSnapshot;
 use badge_rs_core::compare::{COMPARISON_SCHEMA_VERSION, ComparisonDocument};
@@ -38,6 +40,11 @@ pub struct SnapshotPushArgs {
     /// Markdown report to store alongside the snapshot and current pointer
     #[arg(long, value_name = "FILE")]
     pub report: Option<std::path::PathBuf>,
+
+    /// HTML report directory: every file is stored under `commits/{sha}/html/`
+    /// and `html_prefix` is recorded in the pointer
+    #[arg(long, value_name = "DIR")]
+    pub html_report: Option<std::path::PathBuf>,
 
     #[command(flatten)]
     pub storage: StorageOpts,
@@ -116,6 +123,39 @@ pub fn run(args: &SnapshotPushArgs) -> anyhow::Result<()> {
     if let (Some(markdown), Some(key)) = (&report, &report_key) {
         put_markdown(backend.as_ref(), key, markdown)?;
     }
+
+    let html_prefix = if let Some(dir) = &args.html_report {
+        let dir_meta = std::fs::symlink_metadata(dir)
+            .with_context(|| format!("stat --html-report {}", dir.display()))?;
+        anyhow::ensure!(
+            !dir_meta.file_type().is_symlink(),
+            "--html-report path is a symlink: {}",
+            dir.display()
+        );
+        anyhow::ensure!(
+            dir_meta.is_dir(),
+            "--html-report is not a directory: {}",
+            dir.display()
+        );
+        let files = walk_html_report(dir, dir)?;
+        let prefix = keys.commit_html_prefix(&args.sha);
+        for (relative, data) in &files {
+            let key = format!("{prefix}/{relative}");
+            backend.put(
+                &key,
+                data,
+                PutOptions {
+                    if_generation_match: None,
+                    content_type: html_content_type(relative),
+                },
+            )?;
+            println!("uploaded: {key} ({} bytes)", data.len());
+        }
+        Some(prefix)
+    } else {
+        None
+    };
+
     let materialize_report_alias = args.storage.local_dir.is_some();
 
     let mut pointer_keys = Vec::new();
@@ -140,6 +180,7 @@ pub fn run(args: &SnapshotPushArgs) -> anyhow::Result<()> {
             snapshot_key: snapshot_key.clone(),
             comparison_key: comparison_key.clone(),
             report_key: report_key.clone(),
+            html_prefix: html_prefix.clone(),
             updated_at: updated_at.clone(),
         };
         match update_pointer_if_newer(backend.as_ref(), &key, &pointer)? {
@@ -172,4 +213,64 @@ fn put_markdown(
     )?;
     println!("uploaded: {key} ({} bytes)", markdown.len());
     Ok(())
+}
+
+fn validate_html_path_component(name: &str) -> anyhow::Result<()> {
+    if name.is_empty() || name == "." || name == ".." || name.contains('\\') {
+        anyhow::bail!("unsafe HTML report filename component: {:?}", name);
+    }
+    Ok(())
+}
+
+fn walk_html_report(dir: &Path, base: &Path) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+    let mut results = Vec::new();
+    for entry in std::fs::read_dir(dir)
+        .with_context(|| format!("reading html report directory {}", dir.display()))?
+    {
+        let entry = entry.with_context(|| format!("iterating {}", dir.display()))?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        validate_html_path_component(&name_str)?;
+        let path = entry.path();
+        let meta =
+            std::fs::symlink_metadata(&path).with_context(|| format!("stat {}", path.display()))?;
+        if meta.file_type().is_symlink() {
+            anyhow::bail!("HTML report contains a symlink: {}", path.display());
+        }
+        if meta.is_dir() {
+            for item in walk_html_report(&path, base)? {
+                results.push(item);
+            }
+        } else {
+            let relative = path.strip_prefix(base).expect("path is under base");
+            let relative_key = relative
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/");
+            let data =
+                std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+            results.push((relative_key, data));
+        }
+    }
+    Ok(results)
+}
+
+fn html_content_type(filename: &str) -> &'static str {
+    let ext = filename
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "html" | "htm" => "text/html; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "js" | "mjs" => "text/javascript",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "ico" => "image/x-icon",
+        "json" => "application/json",
+        _ => "application/octet-stream",
+    }
 }
