@@ -89,6 +89,50 @@ fn report_html_renders_index_and_file_pages() {
 }
 
 #[test]
+fn report_html_labels_empty_and_comment_only_files() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("report-html-empty");
+    let _ = std::fs::remove_dir_all(&dir);
+    let repo_root = dir.join("repo");
+
+    write(&repo_root.join("pkg/__init__.py"), "");
+    write(
+        &repo_root.join("pkg/notes.py"),
+        "# comment only\n\n# more\n",
+    );
+
+    let head = snapshot_json(
+        r#"{ "path": "pkg/__init__.py", "language": "python", "line_hits": [] },
+           { "path": "pkg/notes.py", "language": "python", "line_hits": [] }"#,
+    );
+    write(&dir.join("head.json"), &head);
+
+    let out = dir.join("report");
+    Command::cargo_bin("badgers")
+        .unwrap()
+        .args(["report", "html"])
+        .arg("--head")
+        .arg(dir.join("head.json"))
+        .arg("--repo-root")
+        .arg(&repo_root)
+        .arg("-o")
+        .arg(&out)
+        .assert()
+        .success();
+
+    let index = std::fs::read_to_string(out.join("index.html")).unwrap();
+    assert_eq!(index.matches("no executable lines").count(), 2);
+
+    let init_page = std::fs::read_to_string(out.join("file-0.html")).unwrap();
+    assert!(init_page.contains("This file is empty"));
+    assert!(init_page.contains("empty file"));
+    assert!(!init_page.contains("<table class=\"code\">"));
+
+    let notes_page = std::fs::read_to_string(out.join("file-1.html")).unwrap();
+    assert!(notes_page.contains("No executable lines"));
+    assert!(notes_page.contains("# comment only"));
+}
+
+#[test]
 fn report_html_works_without_base_and_diff() {
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("report-html-nobase");
     let _ = std::fs::remove_dir_all(&dir);

@@ -165,6 +165,8 @@ tr.changed td.chg::before { content: "±"; }
 tr:target td { outline: 2px solid #0969da; }
 .uncovered-links { margin: 8px 0 16px; font-size: 13px; }
 .uncovered-links a { margin-right: 6px; }
+.notice { background: #fff8c5; border: 1px solid rgba(212,167,44,.4); border-radius: 8px;
+          padding: 10px 14px; font-size: 13px; color: #4d2d00; margin-bottom: 12px; }
 "#;
 
 fn html_escape(s: &str) -> String {
@@ -178,6 +180,16 @@ fn fmt_pct(pct: Option<f64>) -> String {
     match pct {
         Some(p) => format!("{p:.2}%"),
         None => "n/a".to_string(),
+    }
+}
+
+fn coverage_cell_text(pct: Option<f64>, source: &Option<String>) -> String {
+    match pct {
+        Some(p) => format!("{p:.2}%"),
+        None => match source {
+            Some(text) if text.lines().next().is_none() => "empty file".to_string(),
+            _ => "no executable lines".to_string(),
+        },
     }
 }
 
@@ -206,7 +218,13 @@ fn render_index(head: &CoverageSnapshot, comparison: &Comparison) -> String {
         } else {
             format!(r#"<span class="removed">{path} (removed)</span>"#)
         };
-        let head_pct = fmt_pct(delta.head.and_then(|c| c.pct()));
+        let head_pct = match delta.head {
+            Some(c) if c.executable == 0 => {
+                r#"<span class="flat">no executable lines</span>"#.to_string()
+            }
+            Some(c) => fmt_pct(c.pct()),
+            None => "n/a".to_string(),
+        };
         let diff_cell = if delta.diff.relevant > 0 {
             format!(
                 "{}/{} ({})",
@@ -283,9 +301,13 @@ fn render_file_page(
     let is_changed = |line: u32| changed_lines.is_some_and(|set| set.contains(&line));
 
     let source = fs::read_to_string(repo_root.join(&file.path)).ok();
-    let mut rows = String::new();
-    match &source {
+    let body = match &source {
+        Some(text) if text.lines().next().is_none() => {
+            r#"<div class="notice">This file is empty — there is nothing to measure.</div>"#
+                .to_string()
+        }
         Some(text) => {
+            let mut rows = String::new();
             for (idx, raw) in text.lines().enumerate() {
                 let line = (idx + 1) as u32;
                 rows.push_str(&code_row(
@@ -295,8 +317,15 @@ fn render_file_page(
                     raw,
                 ));
             }
+            let notice = if file.executable_lines() == 0 {
+                r#"<div class="notice">No executable lines — this file is not measurable (comments/blank lines only).</div>"#
+            } else {
+                ""
+            };
+            format!("{notice}<table class=\"code\"><tbody>\n{rows}</tbody></table>")
         }
         None => {
+            let mut rows = String::new();
             for lh in &file.line_hits {
                 rows.push_str(&code_row(
                     lh.line,
@@ -305,8 +334,12 @@ fn render_file_page(
                     "(source not available)",
                 ));
             }
+            format!(
+                "<div class=\"notice\">Source file not found in checkout — showing executable lines only.</div>\
+                 <table class=\"code\"><tbody>\n{rows}</tbody></table>"
+            )
         }
-    }
+    };
 
     let uncovered_links = if delta.diff.uncovered_lines.is_empty() {
         String::new()
@@ -340,13 +373,11 @@ coverage {pct} · {delta_txt} · diff coverage {diff_pct} ({diff_covered}/{diff_
 <span>± = line changed in this PR</span>
 </div>
 {uncovered_links}
-<table class="code"><tbody>
-{rows}
-</tbody></table>
+{body}
 </main></body></html>
 "#,
         path = html_escape(&file.path),
-        pct = fmt_pct(file.coverage_pct()),
+        pct = coverage_cell_text(file.coverage_pct(), &source),
         delta_txt = delta_cell(delta.delta_pct()),
         diff_pct = fmt_pct(delta.diff.pct()),
         diff_covered = delta.diff.covered,
