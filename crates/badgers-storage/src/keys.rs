@@ -37,6 +37,14 @@ impl Keys {
         format!("{}/commits/{sha}/coverage.json.zst", self.root)
     }
 
+    pub fn commit_comparison(&self, sha: &str) -> String {
+        format!("{}/commits/{sha}/comparison.json.zst", self.root)
+    }
+
+    pub fn commit_report(&self, sha: &str) -> String {
+        format!("{}/commits/{sha}/README.md", self.root)
+    }
+
     pub fn branch_pointer(&self, branch: &str) -> String {
         format!("{}/refs/{}/latest.json", self.root, encode_branch(branch))
     }
@@ -45,8 +53,12 @@ impl Keys {
         format!("{}/prs/{pr_number}/latest.json", self.root)
     }
 
-    pub fn pr_report_dir(&self, pr_number: u64) -> String {
-        format!("{}/prs/{pr_number}/report", self.root)
+    pub fn branch_report(&self, branch: &str) -> String {
+        format!("{}/refs/{}/README.md", self.root, encode_branch(branch))
+    }
+
+    pub fn pr_report(&self, pr_number: u64) -> String {
+        format!("{}/prs/{pr_number}/README.md", self.root)
     }
 }
 
@@ -70,6 +82,14 @@ mod tests {
             "badgers/repos/owner/repo/commits/abc123/coverage.json.zst"
         );
         assert_eq!(
+            keys.commit_comparison("abc123"),
+            "badgers/repos/owner/repo/commits/abc123/comparison.json.zst"
+        );
+        assert_eq!(
+            keys.commit_report("abc123"),
+            "badgers/repos/owner/repo/commits/abc123/README.md"
+        );
+        assert_eq!(
             keys.branch_pointer("release/1.2"),
             "badgers/repos/owner/repo/refs/release%2F1.2/latest.json"
         );
@@ -78,8 +98,12 @@ mod tests {
             "badgers/repos/owner/repo/prs/547/latest.json"
         );
         assert_eq!(
-            keys.pr_report_dir(547),
-            "badgers/repos/owner/repo/prs/547/report"
+            keys.branch_report("release/1.2"),
+            "badgers/repos/owner/repo/refs/release%2F1.2/README.md"
+        );
+        assert_eq!(
+            keys.pr_report(547),
+            "badgers/repos/owner/repo/prs/547/README.md"
         );
     }
 
