@@ -260,6 +260,8 @@ fn push_rejects_comparison_sha_mismatch() {
 
 #[test]
 fn baseline_fetch_prefers_exact_then_pointer_then_none() {
+    const SHA: &str = "a100000000000000000000000000000000000000";
+    const MISSING_SHA: &str = "b100000000000000000000000000000000000000";
     let tmp = tempfile::tempdir().unwrap();
     let store = tmp.path().join("store");
     let out = tmp.path().join("base.json");
@@ -282,25 +284,47 @@ fn baseline_fetch_prefers_exact_then_pointer_then_none() {
         cmd
     };
 
-    fetch("a1", &out)
+    fetch(MISSING_SHA, &out)
         .assert()
         .success()
         .stdout(predicate::str::contains("baseline-kind=none"));
     assert!(!out.exists());
 
-    let snapshot = write_snapshot(tmp.path(), "a1");
-    push(&store, &snapshot, "a1", "2026-07-19T00:00:00Z");
+    let snapshot = write_snapshot(tmp.path(), SHA);
+    push(&store, &snapshot, SHA, "2026-07-19T00:00:00Z");
 
-    fetch("a1", &out).assert().success().stdout(
+    fetch(SHA, &out).assert().success().stdout(
         predicate::str::contains("baseline-kind=exact")
-            .and(predicate::str::contains("baseline-sha=a1")),
+            .and(predicate::str::contains(format!("baseline-sha={SHA}"))),
     );
     let fetched: serde_json::Value = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
-    assert_eq!(fetched["commit_sha"], "a1");
+    assert_eq!(fetched["commit_sha"], SHA);
     assert_eq!(fetched["files"][0]["path"], "pkg/calc.py");
 
-    fetch("zzz-not-stored", &out).assert().success().stdout(
+    fetch(MISSING_SHA, &out).assert().success().stdout(
         predicate::str::contains("baseline-kind=approximate")
-            .and(predicate::str::contains("baseline-sha=a1")),
+            .and(predicate::str::contains(format!("baseline-sha={SHA}"))),
     );
+}
+
+#[test]
+fn baseline_fetch_rejects_invalid_merge_base_sha() {
+    let tmp = tempfile::tempdir().unwrap();
+    badgers()
+        .args([
+            "baseline",
+            "fetch",
+            "--merge-base",
+            "bad\nname=value",
+            "--base-ref",
+            "main",
+        ])
+        .arg("-o")
+        .arg(tmp.path().join("base.json"))
+        .arg("--local-dir")
+        .arg(tmp.path().join("store"))
+        .args(["--repo", "owner/repo"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid merge-base commit SHA"));
 }
