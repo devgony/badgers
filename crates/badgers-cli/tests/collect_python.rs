@@ -55,3 +55,49 @@ fn usage_error_exits_with_code_2() {
         .assert()
         .code(2);
 }
+
+#[test]
+fn collect_prefers_checked_out_commit_over_github_merge_sha() {
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::write(repo.path().join("tracked.txt"), "fixture\n").unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.name", "Badgers Test"],
+        vec!["config", "user.email", "badgers@example.com"],
+        vec!["add", "tracked.txt"],
+        vec!["commit", "-q", "-m", "fixture"],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let head = String::from_utf8(
+        std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repo.path())
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let out = repo.path().join("snapshot.json");
+
+    Command::cargo_bin("badgers")
+        .unwrap()
+        .args(["collect", "python", "--lcov-file", fixture_path()])
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("--output")
+        .arg(&out)
+        .env("GITHUB_SHA", "0000000000000000000000000000000000000000")
+        .assert()
+        .success();
+
+    let snapshot: serde_json::Value = serde_json::from_slice(&std::fs::read(out).unwrap()).unwrap();
+    assert_eq!(snapshot["commit_sha"], head.trim());
+}
