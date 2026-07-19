@@ -74,11 +74,14 @@ fn report_html_renders_index_and_file_pages() {
         .stdout(predicate::str::contains("index.html"));
 
     let index = std::fs::read_to_string(out.join("index.html")).unwrap();
-    assert!(index.contains("pkg/calc.py"));
+    assert!(index.contains("pkg/</span>"), "directory row for pkg/");
+    assert!(
+        index.contains(r#"<a href="file-0.html">calc.py</a>"#),
+        "file row links with file name"
+    );
     assert!(index.contains("75.00%"), "head total pct");
     assert!(index.contains("-25.00%p"), "delta vs base (100% -> 75%)");
     assert!(index.contains("1/2 (50.00%)"), "diff coverage cell");
-    assert!(index.contains("file-0.html"));
 
     let page = std::fs::read_to_string(out.join("file-0.html")).unwrap();
     assert!(page.contains(r#"<tr id="L5" class="cov changed">"#));
