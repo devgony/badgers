@@ -319,9 +319,9 @@ fn org_policy_hint(err: anyhow::Error, project: &str) -> anyhow::Error {
     err.context(format!(
         "your organization blocks creating workload identity pool providers \
          (constraints/iam.workloadIdentityPoolProviders).\n\
-         Ask an Organization Policy Administrator to allow the GitHub issuer for this \
-         project, then re-run this command:\n\n\
-         gcloud org-policies set-policy - <<'EOF'\n\
+         Ask an Organization Policy Administrator (roles/orgpolicy.policyAdmin) to allow \
+         the GitHub issuer for this project, then re-run this command:\n\n\
+         cat > /tmp/wif-provider-policy.yaml <<'EOF'\n\
          name: projects/{project}/policies/iam.workloadIdentityPoolProviders\n\
          spec:\n\
          \x20 inheritFromParent: false\n\
@@ -329,7 +329,8 @@ fn org_policy_hint(err: anyhow::Error, project: &str) -> anyhow::Error {
          \x20 - values:\n\
          \x20     allowedValues:\n\
          \x20     - https://token.actions.githubusercontent.com\n\
-         EOF"
+         EOF\n\
+         gcloud org-policies set-policy /tmp/wif-provider-policy.yaml"
     ))
 }
 
