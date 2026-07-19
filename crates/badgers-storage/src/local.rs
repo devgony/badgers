@@ -19,6 +19,7 @@ impl LocalBackend {
     fn path_for(&self, key: &str) -> Result<PathBuf, StorageError> {
         let valid = !key.is_empty()
             && !key.starts_with('/')
+            && !key.contains('\\')
             && !key
                 .split('/')
                 .any(|seg| seg.is_empty() || seg == "." || seg == "..");
@@ -180,7 +181,7 @@ mod tests {
     fn rejects_escaping_keys() {
         let dir = tempfile::tempdir().unwrap();
         let backend = LocalBackend::new(dir.path());
-        for key in ["/abs/path", "a/../b", "a/./b", "", "a//b"] {
+        for key in ["/abs/path", "a/../b", "a/./b", "", "a//b", "..\\escape"] {
             assert!(backend.get(key).is_err(), "key {key:?} should be rejected");
         }
     }
