@@ -1,5 +1,5 @@
 [package]
-name = "badgers-github"
+name = "badge-rs-github"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
