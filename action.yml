@@ -59,6 +59,12 @@ inputs:
       works when github-storage-repo is the current repository; use a GitHub
       App installation token or fine-grained PAT for another repository.
     default: ${{ github.token }}
+  github-storage-retention:
+    description: >
+      Retention policy for commits/{sha} directories in the storage branch.
+      'latest' (default) prunes commits not referenced by any pointer after
+      each push. 'all' skips pruning and keeps full history.
+    default: "latest"
   pages-branch:
     description: Branch used for GitHub Pages deployment
     default: "gh-pages"
@@ -360,6 +366,7 @@ runs:
         BADGERS_STORAGE_BRANCH: ${{ inputs.github-storage-branch }}
         BADGERS_STORAGE_PREFIX: ${{ inputs.github-storage-prefix }}
         BADGERS_STORAGE_TOKEN: ${{ inputs.github-storage-token }}
+        BADGERS_STORAGE_RETENTION: ${{ inputs.github-storage-retention }}
       run: |
         set -euo pipefail
         if [[ ! "$BADGERS_STORAGE_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
@@ -383,6 +390,10 @@ runs:
         python3 -c \
           'import sys; p=sys.argv[1]; parts=p.strip("/").split("/") if p.strip("/") else []; bad="\\" in p or any(x in ("", ".", "..") for x in parts); sys.exit("unsafe storage prefix") if bad else None' \
           "$BADGERS_STORAGE_PREFIX"
+        if [ "$BADGERS_STORAGE_RETENTION" != "latest" ] && [ "$BADGERS_STORAGE_RETENTION" != "all" ]; then
+          echo "::error::github-storage-retention must be 'latest' or 'all'"
+          exit 1
+        fi
 
         echo "::add-mask::$BADGERS_STORAGE_TOKEN"
         AUTH_HEADER=$(printf 'x-access-token:%s' "$BADGERS_STORAGE_TOKEN" | base64 | tr -d '\n')
@@ -391,6 +402,7 @@ runs:
         SNAPSHOT="$PWD/coverage-snapshot.json"
         REPORT="$RUNNER_TEMP/badgers-coverage-summary.md"
         COMPARISON="$RUNNER_TEMP/badgers-comparison.json"
+        HTML_REPORT_DIR="$PWD/coverage-report"
         SHA=$(git rev-parse HEAD)
         if [[ ! "$SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
           echo "::error::invalid commit SHA"
@@ -411,15 +423,25 @@ runs:
 
         for attempt in 1 2 3 4 5; do
           STORE=$(mktemp -d)
+          CLONED_SHA=""
           if git -c "http.extraheader=AUTHORIZATION: basic $AUTH_HEADER" \
               clone --depth 1 --branch "$BADGERS_STORAGE_BRANCH" \
               "$REMOTE" "$STORE" 2>/dev/null; then
-            :
+            CLONED_SHA=$(git -C "$STORE" rev-parse HEAD)
+            # Discard history only: the orphan checkout keeps the working
+            # tree and index, so other PRs' and branches' stored reports
+            # survive into the single new parentless commit.
+            git -C "$STORE" checkout -q --orphan badgers-orphan
           else
             rm -rf "$STORE"
             mkdir "$STORE"
             git -C "$STORE" init -q -b "$BADGERS_STORAGE_BRANCH"
             git -C "$STORE" remote add origin "$REMOTE"
+          fi
+
+          HTML_REPORT_ARGS=()
+          if [ -d "$HTML_REPORT_DIR" ]; then
+            HTML_REPORT_ARGS=(--html-report "$HTML_REPORT_DIR")
           fi
 
           badgers snapshot push \
@@ -429,21 +451,34 @@ runs:
             --sha "$SHA" \
             --committed-at "$COMMITTED_AT" \
             "${REF_ARGS[@]}" \
+            "${HTML_REPORT_ARGS[@]}" \
             --local-dir "$STORE" \
             --prefix "$BADGERS_STORAGE_PREFIX" \
             --repo "$BADGERS_SOURCE_REPO"
 
+          if [ "$BADGERS_STORAGE_RETENTION" = "latest" ]; then
+            python3 "$GITHUB_ACTION_PATH/scripts/storage_retention.py" \
+              "$STORE" "$BADGERS_STORAGE_PREFIX"
+          fi
+
           git -C "$STORE" config user.name "github-actions[bot]"
           git -C "$STORE" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git -C "$STORE" add -A
-          if git -C "$STORE" diff --cached --quiet; then
+          if [ -n "$CLONED_SHA" ] &&
+              [ "$(git -C "$STORE" write-tree)" = \
+                "$(git -C "$STORE" rev-parse "${CLONED_SHA}^{tree}")" ]; then
             echo "repository storage already up to date"
             exit 0
           fi
           git -C "$STORE" commit -q -m "coverage: ${BADGERS_SOURCE_REPO} @ ${SHA:0:7}"
+
+          PUSH_ARGS=()
+          if [ -n "$CLONED_SHA" ]; then
+            PUSH_ARGS=("--force-with-lease=refs/heads/$BADGERS_STORAGE_BRANCH:$CLONED_SHA")
+          fi
           if git -C "$STORE" \
               -c "http.extraheader=AUTHORIZATION: basic $AUTH_HEADER" \
-              push origin "HEAD:refs/heads/$BADGERS_STORAGE_BRANCH"; then
+              push "${PUSH_ARGS[@]}" origin "HEAD:refs/heads/$BADGERS_STORAGE_BRANCH"; then
             echo "stored coverage in ${BADGERS_STORAGE_REPO}@${BADGERS_STORAGE_BRANCH}"
             exit 0
           fi

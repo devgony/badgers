@@ -125,6 +125,20 @@ class ReportNavigationTests(unittest.TestCase):
             self.assertNotIn("${{", script_body)
             _ = subprocess.run(["bash", "-n", "-c", script_body], check=True)
 
+    def test_storage_step_uses_orphan_force_with_lease_and_retention(self) -> None:
+        action = SCRIPT.parent.parent.joinpath("action.yml").read_text(encoding="utf-8")
+        self.assertIn("checkout -q --orphan", action)
+        self.assertIn("--force-with-lease=", action)
+        self.assertIn("storage_retention.py", action)
+        self.assertIn("github-storage-retention", action)
+        self.assertIn("BADGERS_STORAGE_RETENTION", action)
+        self.assertIn("--html-report", action)
+        self.assertIn('"$BADGERS_STORAGE_RETENTION" != "latest"', action)
+        # The orphan checkout must preserve the previous storage tree so
+        # other PRs'/branches' reports survive the single-commit rewrite.
+        self.assertNotIn(" rm -rf . ", action)
+        self.assertIn("write-tree", action)
+
 
 if __name__ == "__main__":
     _ = unittest.main()
