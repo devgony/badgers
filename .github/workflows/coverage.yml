@@ -7,7 +7,8 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
+  pages: write
 
 jobs:
   python-coverage:
@@ -17,13 +18,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Build badgers
-        run: cargo build --release -p badgers-cli
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -31,64 +25,8 @@ jobs:
       - name: Install coverage.py
         run: pip install coverage
 
-      - name: Run sample tests under coverage
-        working-directory: examples/python-sample
-        run: python -m coverage run -m unittest discover -v
-
-      - name: Collect coverage snapshot
-        working-directory: examples/python-sample
-        run: |
-          "$GITHUB_WORKSPACE/target/release/badgers" collect python \
-            --repo-root . -o coverage-snapshot.json | tee coverage-summary.txt
-          {
-            echo '### 🦡 Badgers Python Coverage'
-            echo '```'
-            cat coverage-summary.txt
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Build baseline snapshot from merge-base
-        if: github.event_name == 'pull_request'
-        run: |
-          MERGE_BASE=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
-          echo "merge-base: $MERGE_BASE"
-          git worktree add /tmp/base-checkout "$MERGE_BASE"
-          cd /tmp/base-checkout/examples/python-sample
-          python -m coverage run -m unittest discover
-          "$GITHUB_WORKSPACE/target/release/badgers" collect python \
-            --repo-root . -o /tmp/base-snapshot.json
-
-      - name: Generate HTML report (PR, with baseline)
-        if: github.event_name == 'pull_request'
-        working-directory: examples/python-sample
-        run: |
-          "$GITHUB_WORKSPACE/target/release/badgers" report html \
-            --head coverage-snapshot.json \
-            --base /tmp/base-snapshot.json \
-            --git-diff "origin/${{ github.base_ref }}...HEAD" \
-            --repo-root . -o coverage-report
-
-      - name: Generate HTML report (push, head only)
-        if: github.event_name == 'push'
-        working-directory: examples/python-sample
-        run: |
-          "$GITHUB_WORKSPACE/target/release/badgers" report html \
-            --head coverage-snapshot.json \
-            --repo-root . -o coverage-report
-
-      - uses: actions/upload-artifact@v4
+      - uses: ./
         with:
-          name: coverage-snapshot
-          path: examples/python-sample/coverage-snapshot.json
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: coverage-report
-          path: examples/python-sample/coverage-report/
-
-      - name: Link report in summary
-        run: |
-          {
-            echo ''
-            echo '**HTML report**: download the `coverage-report` artifact below and open `index.html`.'
-          } >> "$GITHUB_STEP_SUMMARY"
+          working-directory: examples/python-sample
+          coverage-command: python -m coverage run -m unittest discover
+          pages: true

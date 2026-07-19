@@ -1,0 +1,171 @@
+name: badgers
+description: >
+  PR line coverage for Python projects: collects coverage.py results,
+  compares against the merge-base baseline, and publishes an HTML
+  coverage-diff report (artifact always, GitHub Pages opt-in).
+
+inputs:
+  working-directory:
+    description: Directory containing the Python project (repo-relative)
+    default: "."
+  coverage-command:
+    description: >
+      Command that runs the test suite under coverage.py
+      (e.g. "python -m coverage run -m unittest discover").
+      Also executed at the merge-base checkout to build the PR baseline.
+    required: true
+  pages:
+    description: Deploy the HTML report to GitHub Pages (gh-pages branch)
+    default: "false"
+  pages-branch:
+    description: Branch used for GitHub Pages deployment
+    default: "gh-pages"
+  github-token:
+    description: Token used to push the Pages branch and enable Pages
+    default: ${{ github.token }}
+
+outputs:
+  report-url:
+    description: URL of the deployed HTML report (empty unless pages=true)
+    value: ${{ steps.pages.outputs.report-url }}
+
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: ${{ github.action_path }}
+
+    - name: Build badgers
+      shell: bash
+      run: |
+        cargo build --release --manifest-path "${{ github.action_path }}/Cargo.toml"
+        echo "${{ github.action_path }}/target/release" >> "$GITHUB_PATH"
+
+    - name: Run tests under coverage (head)
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: ${{ inputs.coverage-command }}
+
+    - name: Collect head snapshot
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        badgers collect python --repo-root . -o coverage-snapshot.json \
+          | tee badgers-summary.txt
+        {
+          echo '### 🦡 Badgers Python Coverage'
+          echo '```'
+          cat badgers-summary.txt
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Build baseline snapshot from merge-base
+      if: github.event_name == 'pull_request'
+      shell: bash
+      run: |
+        MERGE_BASE=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+        echo "merge-base: $MERGE_BASE"
+        git worktree add /tmp/badgers-base "$MERGE_BASE"
+        BASE_DIR="/tmp/badgers-base/${{ inputs.working-directory }}"
+        if [ -d "$BASE_DIR" ]; then
+          cd "$BASE_DIR"
+          ${{ inputs.coverage-command }}
+          badgers collect python --repo-root . -o /tmp/badgers-base-snapshot.json
+        else
+          echo "::notice::working directory missing at merge-base; skipping baseline"
+        fi
+
+    - name: Generate HTML report (PR, with baseline)
+      if: github.event_name == 'pull_request'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        BASE_ARGS=()
+        if [ -f /tmp/badgers-base-snapshot.json ]; then
+          BASE_ARGS=(--base /tmp/badgers-base-snapshot.json)
+        fi
+        badgers report html \
+          --head coverage-snapshot.json "${BASE_ARGS[@]}" \
+          --git-diff "origin/${{ github.base_ref }}...HEAD" \
+          --repo-root . -o coverage-report
+
+    - name: Generate HTML report (non-PR, head only)
+      if: github.event_name != 'pull_request'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        badgers report html --head coverage-snapshot.json \
+          --repo-root . -o coverage-report
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: coverage-snapshot
+        path: ${{ inputs.working-directory }}/coverage-snapshot.json
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: ${{ inputs.working-directory }}/coverage-report/
+
+    - name: Deploy report to GitHub Pages branch
+      id: pages
+      if: inputs.pages == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+        REPORT_SRC="$GITHUB_WORKSPACE/${{ inputs.working-directory }}/coverage-report"
+        PAGES_BRANCH="${{ inputs.pages-branch }}"
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          DEST="pr-${{ github.event.pull_request.number }}"
+        else
+          DEST="branch-$(echo "${GITHUB_REF_NAME}" | tr '/' '-')"
+        fi
+
+        SITE=$(mktemp -d)
+        REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+        if git clone --depth 1 --branch "$PAGES_BRANCH" "$REMOTE" "$SITE" 2>/dev/null; then
+          cd "$SITE"
+        else
+          cd "$SITE"
+          git init -q -b "$PAGES_BRANCH"
+          git remote add origin "$REMOTE"
+        fi
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+        rm -rf "$DEST"
+        mkdir -p "$DEST"
+        cp -R "$REPORT_SRC/." "$DEST/"
+        touch .nojekyll
+        git add -A
+        git commit -q -m "coverage report: $DEST @ ${GITHUB_SHA::7}" || {
+          echo "no changes to deploy"; }
+        for attempt in 1 2 3; do
+          if git push origin "$PAGES_BRANCH"; then
+            break
+          fi
+          echo "push failed (attempt $attempt), rebasing..."
+          git pull --rebase origin "$PAGES_BRANCH"
+        done
+
+        gh api "repos/${GITHUB_REPOSITORY}/pages" \
+          -f "source[branch]=$PAGES_BRANCH" -f "source[path]=/" \
+          --method POST >/dev/null 2>&1 \
+          || echo "Pages already enabled or token lacks pages:write (enable once in Settings → Pages)"
+
+        OWNER="${GITHUB_REPOSITORY%%/*}"
+        REPO="${GITHUB_REPOSITORY##*/}"
+        URL=$(gh api "repos/${GITHUB_REPOSITORY}/pages" --jq .html_url 2>/dev/null \
+          || echo "https://${OWNER}.github.io/${REPO}/")
+        REPORT_URL="${URL%/}/${DEST}/"
+        echo "report-url=$REPORT_URL" >> "$GITHUB_OUTPUT"
+        {
+          echo ''
+          echo "**HTML report**: $REPORT_URL"
+        } >> "$GITHUB_STEP_SUMMARY"
+        echo "deployed: $REPORT_URL"
