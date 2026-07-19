@@ -2,6 +2,7 @@ mod baseline_fetch;
 mod python;
 mod report;
 mod report_github;
+mod setup_gcs;
 mod snapshot_push;
 mod storage_opts;
 mod summary;
@@ -29,6 +30,13 @@ pub enum Command {
     Snapshot(SnapshotCommand),
     #[command(subcommand)]
     Baseline(BaselineCommand),
+    #[command(subcommand)]
+    Setup(SetupCommand),
+}
+
+#[derive(Subcommand)]
+pub enum SetupCommand {
+    Gcs(setup_gcs::SetupGcsArgs),
 }
 
 #[derive(Subcommand)]
@@ -59,5 +67,6 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Report(ReportCommand::Github(args)) => report_github::run(&args),
         Command::Snapshot(SnapshotCommand::Push(args)) => snapshot_push::run(&args),
         Command::Baseline(BaselineCommand::Fetch(args)) => baseline_fetch::run(&args),
+        Command::Setup(SetupCommand::Gcs(args)) => setup_gcs::run(&args),
     }
 }
