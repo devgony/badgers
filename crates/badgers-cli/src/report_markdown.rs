@@ -5,7 +5,9 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use badge_rs_core::CoverageSnapshot;
-use badge_rs_core::compare::{ChangedLines, Comparison, FileDelta, compare};
+use badge_rs_core::compare::{
+    COMPARISON_SCHEMA_VERSION, ChangedLines, Comparison, ComparisonDocument, FileDelta, compare,
+};
 use badge_rs_core::coverage_pct;
 use badge_rs_core::diff::parse_unified_diff;
 use clap::Args;
@@ -46,6 +48,10 @@ pub struct MarkdownArgs {
         default_value = "coverage-summary.md"
     )]
     pub output: PathBuf,
+
+    /// Optional machine-readable comparison JSON output
+    #[arg(long, value_name = "PATH")]
+    pub comparison_output: Option<PathBuf>,
 }
 
 pub fn run(args: &MarkdownArgs) -> Result<()> {
@@ -62,6 +68,16 @@ pub fn run(args: &MarkdownArgs) -> Result<()> {
         ChangedLines::default()
     };
     let comparison = compare(base.as_ref(), &head, &changed);
+    if let Some(path) = &args.comparison_output {
+        let document = ComparisonDocument {
+            schema_version: COMPARISON_SCHEMA_VERSION,
+            head_sha: head.commit_sha.clone(),
+            base_sha: base.as_ref().map(|snapshot| snapshot.commit_sha.clone()),
+            comparison: comparison.clone(),
+        };
+        fs::write(path, serde_json::to_vec_pretty(&document)?)
+            .with_context(|| format!("failed to write '{}'", path.display()))?;
+    }
     let source_url = args
         .source_url
         .clone()
