@@ -1,4 +1,4 @@
-/target
+target/
 .DS_Store
 coverage-snapshot.json
 __pycache__/
