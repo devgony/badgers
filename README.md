@@ -93,6 +93,14 @@ when `checks: write` is unavailable to suppress permission warnings. The source
 checkout must use the pull request head SHA as shown above; annotations are
 skipped when the analyzed checkout does not match that SHA.
 
+The compact pull request comment links directly to the durable detailed
+Markdown report when repository storage is enabled, the pull request's
+**Files changed** annotations, and the optional hosted HTML report. The
+`durable-report-url` action output exposes the stable Markdown report URL for
+same-repository pull requests; it is empty when storage is disabled or the pull
+request comes from a fork. The existing `report-url` output continues to expose
+the optional Pages-hosted HTML report.
+
 ## GitHub Repository Storage
 
 Set `github-storage-repo` to keep browsable reports and compressed snapshots in
@@ -118,4 +126,7 @@ pull requests from forks.
 
 ## Status
 
-Badgers is currently a project design. The first milestone is PR line coverage, coverage delta, diff coverage, GitHub PR reporting, and GCS-backed history.
+Badgers implements PR line coverage, coverage delta, diff coverage, GitHub PR
+comments and Check annotations, plus GCS- and GitHub-repository-backed history.
+The project is being dogfooded on this repository while the public action API is
+stabilized.
