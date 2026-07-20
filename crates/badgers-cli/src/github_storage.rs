@@ -36,11 +36,12 @@ impl GithubReportLocation {
     }
 
     pub fn html_index_path(&self, sha: &str) -> Result<String> {
+        Ok(format!("{}/index.html", self.html_prefix(sha)?))
+    }
+
+    pub fn html_prefix(&self, sha: &str) -> Result<String> {
         validate_sha(sha)?;
-        Ok(format!(
-            "{}/index.html",
-            Keys::new(&self.storage_prefix, &self.source_repo).commit_html_prefix(sha)
-        ))
+        Ok(Keys::new(&self.storage_prefix, &self.source_repo).commit_html_prefix(sha))
     }
 
     pub fn report_spec(&self, sha: &str) -> Result<String> {
@@ -177,6 +178,10 @@ mod tests {
         assert_eq!(
             location.report_spec(SHA).unwrap(),
             "reports/archive@coverage/reports:badgers/history/repos/owner/project/commits/0123456789abcdef0123456789abcdef01234567/html/index.html"
+        );
+        assert_eq!(
+            location.html_prefix(SHA).unwrap(),
+            "badgers/history/repos/owner/project/commits/0123456789abcdef0123456789abcdef01234567/html"
         );
         assert_eq!(
             location.view_command(547),

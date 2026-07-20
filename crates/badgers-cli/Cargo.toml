@@ -21,9 +21,9 @@ clap = { workspace = true }
 jiff = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+tempfile = "3.27.0"
 zstd = "0.13"
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
-tempfile = "3.27.0"

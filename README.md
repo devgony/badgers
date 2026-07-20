@@ -17,6 +17,20 @@ identity federation, service account, IAM bindings) then takes a single input:
 badgers setup gcs --project YOUR_GCP_PROJECT_ID
 ```
 
+When GitHub repository storage is enabled, download and open the latest HTML
+report for a pull request with:
+
+```bash
+badgers view 547
+```
+
+The command uses the authenticated GitHub CLI, infers the source repository
+from the current checkout, follows `prs/547/latest.json`, caches the referenced
+HTML bundle, and opens its self-contained `index.html`. Use `--repo`,
+`--storage-repo`, `--storage-branch`, and `--storage-prefix` when the report
+storage differs from the defaults. Pass `--no-open` to download the bundle and
+print its exact local path without opening a browser.
+
 CI workflows do not need the binary: the `devgony/badgers` GitHub Action builds
 and runs it on the runner.
 
@@ -144,9 +158,10 @@ Pass `--html-report <DIR>` (or set it in the action) to store the generated
 written to `commits/{sha}/html/{relative_path}`, and `html_prefix` in the
 pointer JSON records the bundle root so tooling can locate it later.
 
-**HTML is not renderable via GitHub's blob or raw URLs.** To serve it, check
-out the storage branch and run a local web server, or deploy the bundle to a
-static host separately.
+**HTML is not renderable via GitHub's blob or raw URLs.** Use `badgers view
+<PR>` to download and open the self-contained bundle. You can also check out
+the storage branch and open the referenced `index.html`, run a local web
+server, or deploy the bundle to a static host separately.
 
 The storage branch always contains exactly **one parentless (orphan) commit**
 per push. History never grows: each run replaces the branch entirely with a
