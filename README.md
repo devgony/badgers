@@ -101,6 +101,20 @@ same-repository pull requests; it is empty when storage is disabled or the pull
 request comes from a fork. The existing `report-url` output continues to expose
 the optional Pages-hosted HTML report.
 
+Badgers keeps one marker-based coverage comment per pull request and refreshes
+it with the latest result. Before updating, it verifies that the analyzed head
+SHA is still the pull request's current head. Configure the calling workflow
+with PR-scoped concurrency so delayed runs cannot overwrite newer results:
+
+```yaml
+concurrency:
+  group: badgers-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+```
+
+Without workflow-level serialization, comment updates remain best-effort
+because GitHub's issue-comment API does not provide an atomic compare-and-swap.
+
 Markdown reports keep commit-pinned blob links as the primary file navigation.
 Changed files also include a best-effort **PR diff** link pinned to the analyzed
 head commit so the corresponding Files changed section and Check annotations
