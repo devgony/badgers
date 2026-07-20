@@ -563,7 +563,10 @@ runs:
         OWNER="${GITHUB_REPOSITORY%%/*}"
         REPO="${GITHUB_REPOSITORY##*/}"
         URL=$(gh api "repos/${GITHUB_REPOSITORY}/pages" --jq .html_url 2>/dev/null \
-          || echo "https://${OWNER}.github.io/${REPO}/")
+          | head -n1 | tr -d '\r' || true)
+        if [[ ! "$URL" =~ ^https://[A-Za-z0-9.-]+(/[^[:space:]]*)?$ ]]; then
+          URL="https://${OWNER}.github.io/${REPO}/"
+        fi
         REPORT_URL="${URL%/}/${DEST}/"
         echo "report-url=$REPORT_URL" >> "$GITHUB_OUTPUT"
         {
