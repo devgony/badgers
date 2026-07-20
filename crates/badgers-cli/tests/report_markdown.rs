@@ -76,7 +76,7 @@ fn report_markdown_renders_hierarchy_and_source_links() {
     let markdown = std::fs::read_to_string(output).unwrap();
     assert!(markdown.contains("# 🦡 Badgers Coverage Report"));
     assert!(markdown.contains("<summary>📁 <strong>apps/</strong>"));
-    assert!(markdown.contains("<summary>📁 <strong>api/</strong>"));
+    assert!(markdown.contains("<summary>&#x2003;📁 <strong>api/</strong>"));
     assert!(markdown.contains("75.00% (3/4)"));
     assert!(markdown.contains("🔴 -25.00%p"));
     assert!(markdown.contains("50.00% (1/2)"));
