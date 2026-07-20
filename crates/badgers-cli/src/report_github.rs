@@ -83,7 +83,7 @@ pub fn run(args: &GithubArgs) -> Result<()> {
     };
     let comparison = compare(base.as_ref(), &head, &changed);
 
-    let marker = format!("<!-- badgers-report:{}:{} -->", args.repo, args.pr);
+    let marker = comment_marker(args)?;
     let body = render_comment(&marker, &comparison, args);
 
     let token = std::env::var("GITHUB_TOKEN").context("GITHUB_TOKEN is required")?;
@@ -459,6 +459,23 @@ fn short_sha(sha: &str) -> String {
     sha.chars().take(7).collect()
 }
 
+fn comment_marker(args: &GithubArgs) -> Result<String> {
+    match args.head_sha.as_deref() {
+        Some(head_sha)
+            if head_sha.len() == 40 && head_sha.bytes().all(|b| b.is_ascii_hexdigit()) =>
+        {
+            Ok(format!(
+                "<!-- badgers-report:{}:{}:{} -->",
+                args.repo,
+                args.pr,
+                head_sha.to_ascii_lowercase()
+            ))
+        }
+        Some(_) => bail!("--head-sha must be exactly 40 ASCII hexadecimal characters"),
+        None => Ok(format!("<!-- badgers-report:{}:{} -->", args.repo, args.pr)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use badge_rs_core::compare::{Counts, DiffCoverage, FileDelta};
@@ -473,7 +490,7 @@ mod tests {
             repo_root: PathBuf::new(),
             repo: "owner/repo".into(),
             pr: 5,
-            head_sha: Some("def5678901234".into()),
+            head_sha: Some("0123456789abcdef0123456789abcdef01234567".into()),
             baseline_label: Some("exact abc1234".into()),
             report_url: Some("https://example.com/report".into()),
             markdown_report_url: Some("https://example.com/report.md".into()),
@@ -512,12 +529,50 @@ mod tests {
         assert!(body.starts_with("<!-- m -->\n"));
         assert!(body.contains("| **Total** | 75.00% (3/4) | 🔴 -25.00%p |"));
         assert!(body.contains("| **Diff** | 33.33% (1/3) | |"));
-        assert!(body.contains("**Baseline**: exact abc1234 · **Head**: `def5678`"));
+        assert!(body.contains("**Baseline**: exact abc1234 · **Head**: `0123456`"));
         assert!(body.contains("Uncovered changed lines (4)"));
         assert!(body.contains("- <code>pkg/calc.py</code>: L5-L7, L12"));
         assert!(body.contains(
             "**Reports:** <a href=\"https://example.com/report.md\">Detailed coverage report</a> · <a href=\"https://github.com/owner/repo/pull/5/files\">Files changed annotations</a> · <a href=\"https://example.com/report\">HTML report</a>"
         ));
+    }
+
+    #[test]
+    fn comment_marker_is_stable_per_head_and_changes_between_pushes() {
+        let mut a = args();
+        let first = comment_marker(&a).unwrap();
+        assert_eq!(
+            first,
+            "<!-- badgers-report:owner/repo:5:0123456789abcdef0123456789abcdef01234567 -->"
+        );
+        assert_eq!(comment_marker(&a).unwrap(), first);
+
+        a.head_sha = Some("ABCDEF0123456789ABCDEF0123456789ABCDEF01".into());
+        assert_eq!(
+            comment_marker(&a).unwrap(),
+            "<!-- badgers-report:owner/repo:5:abcdef0123456789abcdef0123456789abcdef01 -->"
+        );
+        assert_ne!(comment_marker(&a).unwrap(), first);
+    }
+
+    #[test]
+    fn comment_marker_rejects_invalid_head_shas() {
+        let mut a = args();
+        for head_sha in [
+            "abc123",
+            "０１２３４５６７８９abcdef0123456789abcdef01234567",
+            "0123456789abcdef0123456789abcdef0123456g",
+            "0123456789abcdef0123456789abcdef0-->\nhi",
+        ] {
+            a.head_sha = Some(head_sha.into());
+            assert!(comment_marker(&a).is_err(), "accepted {head_sha:?}");
+        }
+
+        a.head_sha = None;
+        assert_eq!(
+            comment_marker(&a).unwrap(),
+            "<!-- badgers-report:owner/repo:5 -->"
+        );
     }
 
     #[test]
