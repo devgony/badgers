@@ -12,6 +12,10 @@ permissions:
   pages: write
   pull-requests: write
 
+concurrency:
+  group: badgers-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   python-coverage:
     runs-on: ubuntu-latest
