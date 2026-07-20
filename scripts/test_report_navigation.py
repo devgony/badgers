@@ -127,6 +127,8 @@ class ReportNavigationTests(unittest.TestCase):
 
     def test_storage_step_uses_orphan_force_with_lease_and_retention(self) -> None:
         action = SCRIPT.parent.parent.joinpath("action.yml").read_text(encoding="utf-8")
+        self.assertIn('default: "badgers-coverage"', action)
+        self.assertNotIn('default: "badgers-reports"', action)
         self.assertIn("checkout -q --orphan", action)
         self.assertIn("--force-with-lease=", action)
         self.assertIn("storage_retention.py", action)
