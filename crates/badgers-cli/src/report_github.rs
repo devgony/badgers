@@ -89,13 +89,43 @@ pub fn run(args: &GithubArgs) -> Result<()> {
     let token = std::env::var("GITHUB_TOKEN").context("GITHUB_TOKEN is required")?;
     let client = GithubClient::with_base_url(args.repo.clone(), token, github_api_url()?);
     if !args.skip_comment {
-        match client.upsert_pr_comment(args.pr, &marker, &body) {
-            Ok(CommentAction::Created) => println!("comment created on PR #{}", args.pr),
-            Ok(CommentAction::Updated) => println!("comment updated on PR #{}", args.pr),
-            Err(e) if args.soft_fail => {
-                println!("::warning::badgers could not post the PR comment: {e}");
+        let current_head = args
+            .head_sha
+            .as_deref()
+            .map(|expected| match client.pull_request_head_sha(args.pr) {
+                Ok(current) => Ok(Some((expected, current))),
+                Err(error) if args.soft_fail => {
+                    println!("::warning::badgers could not verify the current PR head: {error}");
+                    Ok(None)
+                }
+                Err(error) => Err(error),
+            })
+            .transpose()?;
+        let should_publish = match current_head.flatten() {
+            Some((expected, current)) if !same_commit_sha(expected, &current) => {
+                println!(
+                    "::notice::stale coverage run for {expected}; current PR head is {current}; comment update skipped"
+                );
+                false
             }
-            Err(e) => return Err(e.into()),
+            Some(_) => true,
+            None => args.head_sha.is_none(),
+        };
+        if should_publish {
+            let legacy_marker_prefix = format!("<!-- badgers-report:{}:{}:", args.repo, args.pr);
+            match client.upsert_pr_comment_with_aliases(
+                args.pr,
+                &marker,
+                &[&legacy_marker_prefix],
+                &body,
+            ) {
+                Ok(CommentAction::Created) => println!("comment created on PR #{}", args.pr),
+                Ok(CommentAction::Updated) => println!("comment updated on PR #{}", args.pr),
+                Err(e) if args.soft_fail => {
+                    println!("::warning::badgers could not post the PR comment: {e}");
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
     }
 
@@ -443,21 +473,17 @@ fn short_sha(sha: &str) -> String {
     sha.chars().take(7).collect()
 }
 
+fn same_commit_sha(left: &str, right: &str) -> bool {
+    left.eq_ignore_ascii_case(right)
+}
+
 fn comment_marker(args: &GithubArgs) -> Result<String> {
-    match args.head_sha.as_deref() {
-        Some(head_sha)
-            if head_sha.len() == 40 && head_sha.bytes().all(|b| b.is_ascii_hexdigit()) =>
-        {
-            Ok(format!(
-                "<!-- badgers-report:{}:{}:{} -->",
-                args.repo,
-                args.pr,
-                head_sha.to_ascii_lowercase()
-            ))
-        }
-        Some(_) => bail!("--head-sha must be exactly 40 ASCII hexadecimal characters"),
-        None => Ok(format!("<!-- badgers-report:{}:{} -->", args.repo, args.pr)),
+    if args.head_sha.as_deref().is_some_and(|head_sha| {
+        head_sha.len() != 40 || !head_sha.bytes().all(|b| b.is_ascii_hexdigit())
+    }) {
+        bail!("--head-sha must be exactly 40 ASCII hexadecimal characters");
     }
+    Ok(format!("<!-- badgers-report:{}:{} -->", args.repo, args.pr))
 }
 
 #[cfg(test)]
@@ -522,21 +548,14 @@ mod tests {
     }
 
     #[test]
-    fn comment_marker_is_stable_per_head_and_changes_between_pushes() {
+    fn comment_marker_is_stable_across_head_pushes() {
         let mut a = args();
         let first = comment_marker(&a).unwrap();
-        assert_eq!(
-            first,
-            "<!-- badgers-report:owner/repo:5:0123456789abcdef0123456789abcdef01234567 -->"
-        );
+        assert_eq!(first, "<!-- badgers-report:owner/repo:5 -->");
         assert_eq!(comment_marker(&a).unwrap(), first);
 
         a.head_sha = Some("ABCDEF0123456789ABCDEF0123456789ABCDEF01".into());
-        assert_eq!(
-            comment_marker(&a).unwrap(),
-            "<!-- badgers-report:owner/repo:5:abcdef0123456789abcdef0123456789abcdef01 -->"
-        );
-        assert_ne!(comment_marker(&a).unwrap(), first);
+        assert_eq!(comment_marker(&a).unwrap(), first);
     }
 
     #[test]
@@ -557,6 +576,18 @@ mod tests {
             comment_marker(&a).unwrap(),
             "<!-- badgers-report:owner/repo:5 -->"
         );
+    }
+
+    #[test]
+    fn current_head_comparison_is_case_insensitive_and_rejects_stale_runs() {
+        assert!(same_commit_sha(
+            "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+            "abcdef0123456789abcdef0123456789abcdef01"
+        ));
+        assert!(!same_commit_sha(
+            "0123456789abcdef0123456789abcdef01234567",
+            "abcdef0123456789abcdef0123456789abcdef01"
+        ));
     }
 
     #[test]
