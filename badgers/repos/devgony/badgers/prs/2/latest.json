@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "branch": "pr-2",
+  "commit_sha": "26e33aaf2c486e49da140f13be126c0639df610d",
+  "committed_at": "2026-07-20T10:37:39+09:00",
+  "snapshot_key": "badgers/repos/devgony/badgers/commits/26e33aaf2c486e49da140f13be126c0639df610d/coverage.json.zst",
+  "comparison_key": "badgers/repos/devgony/badgers/commits/26e33aaf2c486e49da140f13be126c0639df610d/comparison.json.zst",
+  "report_key": "badgers/repos/devgony/badgers/commits/26e33aaf2c486e49da140f13be126c0639df610d/README.md",
+  "html_prefix": "badgers/repos/devgony/badgers/commits/26e33aaf2c486e49da140f13be126c0639df610d/html",
+  "updated_at": "2026-07-20T01:38:13.765700264Z"
+}
