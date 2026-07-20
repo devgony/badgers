@@ -49,7 +49,7 @@ inputs:
     default: ""
   github-storage-branch:
     description: Dedicated branch used in the storage repository
-    default: "badgers-reports"
+    default: "badgers-coverage"
   github-storage-prefix:
     description: Path prefix inside the storage repository
     default: "badgers"

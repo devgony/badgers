@@ -105,7 +105,7 @@ the optional Pages-hosted HTML report.
 
 Set `github-storage-repo` to keep browsable reports and compressed snapshots in
 a dedicated Git branch. `github-storage-branch` defaults to
-`badgers-reports`; `github-storage-prefix` defaults to `badgers`.
+`badgers-coverage`; `github-storage-prefix` defaults to `badgers`.
 
 ```text
 badgers/repos/{owner}/{repo}/
