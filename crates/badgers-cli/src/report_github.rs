@@ -9,6 +9,9 @@ use badge_rs_core::diff::parse_unified_diff;
 use badge_rs_github::{CheckAnnotation, CommentAction, GithubClient};
 use clap::Args;
 
+use crate::github_storage::{
+    DEFAULT_STORAGE_BRANCH, DEFAULT_STORAGE_PREFIX, GithubReportLocation, html_escape,
+};
 use crate::report::{git_diff_output, git_path_prefix, read_snapshot};
 
 #[derive(Args, Debug)]
@@ -57,6 +60,18 @@ pub struct GithubArgs {
     #[arg(long)]
     pub files_changed_url: Option<String>,
 
+    /// GitHub repository containing the durable HTML report branch
+    #[arg(long, requires = "head_sha")]
+    pub storage_repo: Option<String>,
+
+    /// Dedicated branch containing durable reports
+    #[arg(long, default_value = DEFAULT_STORAGE_BRANCH)]
+    pub storage_branch: String,
+
+    /// Path prefix inside the durable report branch
+    #[arg(long, default_value = DEFAULT_STORAGE_PREFIX)]
+    pub storage_prefix: String,
+
     /// Emit a warning instead of failing when the comment cannot be posted
     #[arg(long)]
     pub soft_fail: bool,
@@ -74,6 +89,7 @@ pub fn run(args: &GithubArgs) -> Result<()> {
     validate_navigation_url(args.markdown_report_url.as_deref(), "Markdown report URL")?;
     validate_navigation_url(args.files_changed_url.as_deref(), "Files changed URL")?;
     validate_report_url(args.report_url.as_deref())?;
+    stored_report_location(args)?;
 
     let head = read_snapshot(&args.head)?;
     let base = args.base.as_deref().map(read_snapshot).transpose()?;
@@ -354,7 +370,41 @@ fn render_comment(marker: &str, comparison: &Comparison, args: &GithubArgs) -> S
         let _ = writeln!(out);
         let _ = writeln!(out, "**Reports:** {}", links.join(" · "));
     }
+    if let (Some(location), Some(sha)) = (
+        stored_report_location(args).ok().flatten(),
+        args.head_sha.as_deref(),
+    ) {
+        let report_spec = location
+            .report_spec(sha)
+            .expect("head SHA is validated before rendering");
+        let command = location.view_command(args.pr);
+        let _ = writeln!(out);
+        let _ = writeln!(out, "<details><summary>View stored HTML locally</summary>");
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "**Stored report:** <code>{}</code>",
+            html_escape(&report_spec)
+        );
+        let _ = writeln!(out);
+        let _ = writeln!(out, "<pre><code>{}</code></pre>", html_escape(&command));
+        let _ = writeln!(out, "</details>");
+    }
     out
+}
+
+fn stored_report_location(args: &GithubArgs) -> Result<Option<GithubReportLocation>> {
+    args.storage_repo
+        .as_deref()
+        .map(|storage_repo| {
+            GithubReportLocation::new(
+                &args.repo,
+                storage_repo,
+                &args.storage_branch,
+                &args.storage_prefix,
+            )
+        })
+        .transpose()
 }
 
 const MAX_RANGES_PER_FILE: usize = 10;
@@ -505,6 +555,9 @@ mod tests {
             report_url: Some("https://example.com/report".into()),
             markdown_report_url: Some("https://example.com/report.md".into()),
             files_changed_url: Some("https://github.com/owner/repo/pull/5/files".into()),
+            storage_repo: None,
+            storage_branch: DEFAULT_STORAGE_BRANCH.into(),
+            storage_prefix: DEFAULT_STORAGE_PREFIX.into(),
             soft_fail: false,
             skip_comment: false,
             check_annotations: false,
@@ -544,6 +597,21 @@ mod tests {
         assert!(body.contains("- <code>pkg/calc.py</code>: L5-L7, L12"));
         assert!(body.contains(
             "**Reports:** <a href=\"https://example.com/report.md\">Detailed coverage report</a> · <a href=\"https://github.com/owner/repo/pull/5/files\">Files changed annotations</a> · <a href=\"https://example.com/report\">HTML report</a>"
+        ));
+    }
+
+    #[test]
+    fn renders_exact_stored_report_path_and_view_command() {
+        let mut a = args();
+        a.storage_repo = Some("reports/archive".into());
+        a.storage_branch = "coverage/reports".into();
+        a.storage_prefix = "badgers/history".into();
+        let body = render_comment("<!-- m -->", &comparison(), &a);
+        assert!(body.contains(
+            "<code>reports/archive@coverage/reports:badgers/history/repos/owner/repo/commits/0123456789abcdef0123456789abcdef01234567/html/index.html</code>"
+        ));
+        assert!(body.contains(
+            "<pre><code>badgers view 5 --repo owner/repo --storage-repo reports/archive --storage-branch coverage/reports --storage-prefix badgers/history</code></pre>"
         ));
     }
 

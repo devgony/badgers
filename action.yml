@@ -594,6 +594,9 @@ runs:
         BADGERS_BASE_REF: ${{ github.base_ref }}
         BADGERS_HTML_REPORT_URL: ${{ steps.pages.outputs.report-url }}
         BADGERS_PR_NUMBER: ${{ github.event.pull_request.number }}
+        BADGERS_STORAGE_REPO: ${{ inputs.github-storage-repo }}
+        BADGERS_STORAGE_BRANCH: ${{ inputs.github-storage-branch }}
+        BADGERS_STORAGE_PREFIX: ${{ inputs.github-storage-prefix }}
       run: |
         set -euo pipefail
         if [[ ! "$BADGERS_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
@@ -638,6 +641,15 @@ runs:
           URL_ARGS+=(--files-changed-url "$BADGERS_FILES_CHANGED_URL")
         fi
 
+        STORAGE_ARGS=()
+        if [ -n "$BADGERS_STORAGE_REPO" ]; then
+          STORAGE_ARGS=(
+            --storage-repo "$BADGERS_STORAGE_REPO"
+            --storage-branch "$BADGERS_STORAGE_BRANCH"
+            --storage-prefix "$BADGERS_STORAGE_PREFIX"
+          )
+        fi
+
         PUBLISH_ARGS=()
         if [ "$BADGERS_PR_COMMENT" != "true" ]; then
           PUBLISH_ARGS+=(--skip-comment)
@@ -653,5 +665,6 @@ runs:
           --repo "$GITHUB_REPOSITORY" \
           --pr "$BADGERS_PR_NUMBER" \
           --head-sha "$BADGERS_HEAD_SHA" \
-          "${LABEL_ARGS[@]}" "${URL_ARGS[@]}" "${PUBLISH_ARGS[@]}" \
+          "${LABEL_ARGS[@]}" "${URL_ARGS[@]}" "${STORAGE_ARGS[@]}" \
+          "${PUBLISH_ARGS[@]}" \
           --soft-fail

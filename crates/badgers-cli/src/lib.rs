@@ -1,4 +1,5 @@
 mod baseline_fetch;
+mod github_storage;
 mod python;
 mod report;
 mod report_github;
