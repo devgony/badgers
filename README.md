@@ -24,12 +24,15 @@ report for a pull request with:
 badgers view 547
 ```
 
-The command uses the authenticated GitHub CLI, infers the source repository
-from the current checkout, follows `prs/547/latest.json`, caches the referenced
-HTML bundle, and opens its self-contained `index.html`. Use `--repo`,
-`--storage-repo`, `--storage-branch`, and `--storage-prefix` when the report
-storage differs from the defaults. Pass `--no-open` to download the bundle and
-print its exact local path without opening a browser.
+The command infers the source repository from the checkout's local `origin`
+remote, follows `prs/547/latest.json`, caches the referenced HTML bundle, and
+opens its self-contained `index.html`. Same-repository storage is cloned
+directly through the existing Git remote, so repository detection does not
+require a GitHub API call. Use `--repo`, `--storage-repo`,
+`--storage-branch`, and `--storage-prefix` when the report storage differs
+from the defaults. Cross-repository storage uses the authenticated GitHub CLI.
+Pass `--no-open` to download the bundle and print its exact local path without
+opening a browser.
 
 CI workflows do not need the binary: the `devgony/badgers` GitHub Action builds
 and runs it on the runner.

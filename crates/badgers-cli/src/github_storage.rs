@@ -86,6 +86,22 @@ pub(crate) fn validate_repo_slug(value: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn parse_repo_url(url: &str) -> Option<String> {
+    let trimmed = url.trim().trim_end_matches(".git");
+    let tail = trimmed
+        .rsplit_once(':')
+        .map(|(_, tail)| tail)
+        .unwrap_or(trimmed)
+        .trim_start_matches('/');
+    let mut segments = tail.rsplit('/');
+    let name = segments.next()?;
+    let owner = segments.next()?;
+    let repo = format!("{owner}/{name}");
+    validate_repo_slug(&repo, "Git remote repository")
+        .ok()
+        .map(|()| repo)
+}
+
 fn valid_repo_part(value: &str) -> bool {
     !value.is_empty()
         && value
@@ -210,5 +226,19 @@ mod tests {
         assert!(GithubReportLocation::new("o/r", "o/r", "../main", "badgers").is_err());
         assert!(GithubReportLocation::new("o/r", "o/r", "main", "badgers/../x").is_err());
         assert!(validate_sha("abc123").is_err());
+    }
+
+    #[test]
+    fn parses_common_git_remote_urls() {
+        for url in [
+            "git@github.com:owner/repo.git",
+            "https://github.com/owner/repo.git",
+            "https://github.com/owner/repo",
+            "ssh://git@github.com/owner/repo.git",
+        ] {
+            assert_eq!(parse_repo_url(url).as_deref(), Some("owner/repo"), "{url}");
+        }
+        assert_eq!(parse_repo_url("not-a-url"), None);
+        assert_eq!(parse_repo_url("https://github.com/owner/../repo"), None);
     }
 }

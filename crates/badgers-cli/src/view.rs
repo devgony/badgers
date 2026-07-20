@@ -8,8 +8,8 @@ use clap::Args;
 use sha2::{Digest, Sha256};
 
 use crate::github_storage::{
-    DEFAULT_STORAGE_BRANCH, DEFAULT_STORAGE_PREFIX, GithubReportLocation, validate_repo_slug,
-    validate_sha,
+    DEFAULT_STORAGE_BRANCH, DEFAULT_STORAGE_PREFIX, GithubReportLocation, parse_repo_url,
+    validate_repo_slug, validate_sha,
 };
 
 #[derive(Args, Debug)]
@@ -17,7 +17,7 @@ pub struct ViewArgs {
     /// Pull request number whose latest HTML report should be opened
     pub pr: u64,
 
-    /// Source repository, inferred from GITHUB_REPOSITORY or the current gh repository
+    /// Source repository, inferred from GITHUB_REPOSITORY or the local origin remote
     #[arg(long, value_name = "OWNER/REPO")]
     pub repo: Option<String>,
 
@@ -44,17 +44,17 @@ pub struct ViewArgs {
 
 pub fn run(args: &ViewArgs) -> Result<()> {
     ensure!(args.pr > 0, "pull request number must be greater than zero");
-    let source_repo = resolve_source_repo(args.repo.as_deref())?;
-    let storage_repo = args.storage_repo.as_deref().unwrap_or(&source_repo);
+    let source = resolve_source_repo(args.repo.as_deref())?;
+    let storage_repo = args.storage_repo.as_deref().unwrap_or(&source.slug);
     let location = GithubReportLocation::new(
-        &source_repo,
+        &source.slug,
         storage_repo,
         &args.storage_branch,
         &args.storage_prefix,
     )?;
 
     let checkout = tempfile::tempdir().context("creating temporary GitHub storage checkout")?;
-    clone_storage_branch(&location, checkout.path())?;
+    clone_storage_branch(&location, source.origin_url.as_deref(), checkout.path())?;
     let pointer = read_pointer(&location, args.pr, checkout.path())?;
     let html_prefix = pointer
         .html_prefix
@@ -97,18 +97,35 @@ pub fn run(args: &ViewArgs) -> Result<()> {
     Ok(())
 }
 
-fn resolve_source_repo(explicit: Option<&str>) -> Result<String> {
-    if let Some(repo) = explicit {
-        validate_repo_slug(repo, "source repository")?;
-        return Ok(repo.to_string());
-    }
-    if let Ok(repo) = std::env::var("GITHUB_REPOSITORY")
+#[derive(Debug, PartialEq, Eq)]
+struct SourceRepository {
+    slug: String,
+    origin_url: Option<String>,
+}
+
+fn resolve_source_repo(explicit: Option<&str>) -> Result<SourceRepository> {
+    let origin_url = local_origin_url();
+    let origin_repo = origin_url.as_deref().and_then(parse_repo_url);
+
+    let slug = if let Some(repo) = explicit {
+        repo.to_string()
+    } else if let Ok(repo) = std::env::var("GITHUB_REPOSITORY")
         && !repo.is_empty()
     {
-        validate_repo_slug(&repo, "GITHUB_REPOSITORY")?;
-        return Ok(repo);
-    }
+        repo
+    } else if let Some(repo) = &origin_repo {
+        repo.clone()
+    } else {
+        github_cli_repo()?
+    };
+    validate_repo_slug(&slug, "source repository")?;
+    let origin_url = (origin_repo.as_deref() == Some(&slug))
+        .then_some(origin_url)
+        .flatten();
+    Ok(SourceRepository { slug, origin_url })
+}
 
+fn github_cli_repo() -> Result<String> {
     let output = Command::new("gh")
         .args([
             "repo",
@@ -134,15 +151,50 @@ fn resolve_source_repo(explicit: Option<&str>) -> Result<String> {
     Ok(repo)
 }
 
-fn clone_storage_branch(location: &GithubReportLocation, destination: &Path) -> Result<()> {
-    let status = Command::new("gh")
-        .args(["repo", "clone", &location.storage_repo])
-        .arg(destination)
-        .arg("--")
-        .args(["--quiet", "--depth", "1", "--single-branch", "--branch"])
-        .arg(&location.storage_branch)
-        .status()
-        .context("running gh repo clone; install and authenticate GitHub CLI first")?;
+fn local_origin_url() -> Option<String> {
+    let output = Command::new("git")
+        .args(["config", "--get", "remote.origin.url"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let url = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!url.is_empty()).then_some(url)
+}
+
+fn clone_storage_branch(
+    location: &GithubReportLocation,
+    source_origin_url: Option<&str>,
+    destination: &Path,
+) -> Result<()> {
+    let status = if let Some(origin_url) =
+        source_origin_url.filter(|_| location.storage_repo == location.source_repo)
+    {
+        Command::new("git")
+            .args([
+                "clone",
+                "--quiet",
+                "--depth",
+                "1",
+                "--single-branch",
+                "--branch",
+            ])
+            .arg(&location.storage_branch)
+            .arg(origin_url)
+            .arg(destination)
+            .status()
+            .context("running git clone for the local origin remote")?
+    } else {
+        Command::new("gh")
+            .args(["repo", "clone", &location.storage_repo])
+            .arg(destination)
+            .arg("--")
+            .args(["--quiet", "--depth", "1", "--single-branch", "--branch"])
+            .arg(&location.storage_branch)
+            .status()
+            .context("running gh repo clone; install and authenticate GitHub CLI first")?
+    };
     ensure!(
         status.success(),
         "could not clone {} branch {}",
@@ -386,6 +438,26 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(destination.join("nested/file.html")).unwrap(),
             "file"
+        );
+    }
+
+    #[test]
+    fn recognizes_when_local_origin_can_clone_storage_directly() {
+        let source = SourceRepository {
+            slug: "owner/project".into(),
+            origin_url: Some("git@github.com:owner/project.git".into()),
+        };
+        let location = GithubReportLocation::new(
+            &source.slug,
+            "owner/project",
+            DEFAULT_STORAGE_BRANCH,
+            DEFAULT_STORAGE_PREFIX,
+        )
+        .unwrap();
+        assert_eq!(location.storage_repo, location.source_repo);
+        assert_eq!(
+            source.origin_url.as_deref(),
+            Some("git@github.com:owner/project.git")
         );
     }
 }

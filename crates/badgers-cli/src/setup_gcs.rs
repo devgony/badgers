@@ -3,6 +3,8 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use clap::Args;
 
+use crate::github_storage::parse_repo_url;
+
 /// Provision everything GitHub Actions needs to use GCS with badgers:
 /// bucket, workload identity pool/provider, service account, IAM bindings.
 /// Every step is idempotent; existing resources are left untouched.
@@ -440,22 +442,6 @@ fn detect_repo() -> Result<String> {
         .read("git", &["config", "--get", "remote.origin.url"])
         .context("detecting repo from git remote (or pass --repo owner/name)")?;
     parse_repo_url(&url).with_context(|| format!("cannot parse owner/name from remote {url:?}"))
-}
-
-fn parse_repo_url(url: &str) -> Option<String> {
-    let trimmed = url.trim().trim_end_matches(".git");
-    let tail = trimmed
-        .rsplit_once(':')
-        .map(|(_, t)| t)
-        .unwrap_or(trimmed)
-        .trim_start_matches('/');
-    let mut segments = tail.rsplit('/');
-    let name = segments.next()?;
-    let owner = segments.next()?;
-    if name.is_empty() || owner.is_empty() || owner.contains('@') {
-        return None;
-    }
-    Some(format!("{owner}/{name}"))
 }
 
 fn sanitize(name: &str, max_len: usize) -> String {
