@@ -101,6 +101,12 @@ same-repository pull requests; it is empty when storage is disabled or the pull
 request comes from a fork. The existing `report-url` output continues to expose
 the optional Pages-hosted HTML report.
 
+Markdown reports keep commit-pinned blob links as the primary file navigation.
+Changed files also include a best-effort **PR diff** link pinned to the analyzed
+head commit so the corresponding Files changed section and Check annotations
+are easy to inspect. GitHub does not document its per-file `#diff-…` anchors,
+so these auxiliary links may change with GitHub's web UI.
+
 ## GitHub Repository Storage
 
 Set `github-storage-repo` to keep browsable reports and compressed snapshots in
