@@ -66,7 +66,7 @@ tr:target td { outline: 2px solid #0969da; }
 <body>
 <header><h1>pkg/features/math/advanced.py</h1>
 <div class="meta"><a href="index.html" style="color:#d0d7de">← index</a> ·
-coverage 60.00% · <span class="flat">±0.00%p</span> · diff coverage n/a (0/0)</div></header>
+coverage 50.00% · <span class="down">-10.00%p</span> · diff coverage 0.00% (0/2)</div></header>
 <main>
 <div class="legend">
 <span style="background:#e6ffec">covered</span>
@@ -75,7 +75,7 @@ coverage 60.00% · <span class="flat">±0.00%p</span> · diff coverage n/a (0/0)
 <span style="background:#ffb3ad">uncovered + changed</span>
 <span>± = line changed in this PR</span>
 </div>
-
+<div class="uncovered-links">Uncovered changed lines: <a href="#L7">L7</a> <a href="#L8">L8</a></div>
 <table class="code"><tbody>
 <tr id="L1" class="cov"><td class="ln"><a href="#L1">1</a></td><td class="hits">1</td><td class="chg"></td><td>def square(value: int) -&gt; int:</td></tr>
 <tr id="L2" class="cov"><td class="ln"><a href="#L2">2</a></td><td class="hits">1</td><td class="chg"></td><td>    return value * value</td></tr>
@@ -83,6 +83,7 @@ coverage 60.00% · <span class="flat">±0.00%p</span> · diff coverage n/a (0/0)
 <tr id="L4"><td class="ln"><a href="#L4">4</a></td><td class="hits"></td><td class="chg"></td><td></td></tr>
 <tr id="L5" class="cov"><td class="ln"><a href="#L5">5</a></td><td class="hits">1</td><td class="chg"></td><td>def cube(value: int) -&gt; int:</td></tr>
 <tr id="L6" class="miss"><td class="ln"><a href="#L6">6</a></td><td class="hits">0</td><td class="chg"></td><td>    squared = value * value</td></tr>
-<tr id="L7" class="miss"><td class="ln"><a href="#L7">7</a></td><td class="hits">0</td><td class="chg"></td><td>    return squared * value</td></tr>
+<tr id="L7" class="miss changed"><td class="ln"><a href="#L7">7</a></td><td class="hits">0</td><td class="chg"></td><td>    cubed = squared * value</td></tr>
+<tr id="L8" class="miss changed"><td class="ln"><a href="#L8">8</a></td><td class="hits">0</td><td class="chg"></td><td>    return cubed</td></tr>
 </tbody></table>
 </main></body></html>
