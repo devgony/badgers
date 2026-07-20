@@ -1,9 +1,9 @@
-name: badgers
-description: >
-  PR line coverage for Python projects: collects coverage.py results,
-  compares against the merge-base baseline (from GCS history when
-  configured, otherwise rebuilt in a worktree), and publishes coverage-diff
-  reports (HTML artifact always; Markdown job summary and GitHub Pages opt-in).
+name: Badgers PR Coverage
+description: PR line coverage reports for Python projects with diff annotations, comments, and durable history.
+author: devgony
+branding:
+  icon: activity
+  color: orange
 
 inputs:
   working-directory:
