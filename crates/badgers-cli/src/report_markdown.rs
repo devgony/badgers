@@ -11,8 +11,9 @@ use badge_rs_core::compare::{
 use badge_rs_core::coverage_pct;
 use badge_rs_core::diff::parse_unified_diff;
 use clap::Args;
+use sha2::{Digest, Sha256};
 
-use crate::report::{git_diff_output, read_snapshot};
+use crate::report::{git_diff_output, git_path_prefix, read_snapshot};
 
 #[derive(Args, Debug)]
 pub struct MarkdownArgs {
@@ -92,11 +93,17 @@ pub fn run(args: &MarkdownArgs) -> Result<()> {
     if let Some(url) = &args.files_changed_url {
         validate_https_url(url, "Files changed URL")?;
     }
+    let repo_path_prefix = if args.files_changed_url.is_some() {
+        git_path_prefix(&args.repo_root)?
+    } else {
+        String::new()
+    };
     let markdown = render(
         &head,
         &comparison,
         source_url.as_deref(),
         args.files_changed_url.as_deref(),
+        &repo_path_prefix,
     );
     fs::write(&args.output, markdown)
         .with_context(|| format!("failed to write '{}'", args.output.display()))?;
@@ -223,11 +230,20 @@ fn aggregate(node: &DirNode, files: &[FileDelta]) -> DirAgg {
     agg
 }
 
+#[derive(Clone, Copy)]
+struct LinkContext<'a> {
+    source_url: Option<&'a str>,
+    files_changed_url: Option<&'a str>,
+    head_sha: &'a str,
+    repo_path_prefix: &'a str,
+}
+
 fn render(
     head: &CoverageSnapshot,
     comparison: &Comparison,
     source_url: Option<&str>,
     files_changed_url: Option<&str>,
+    repo_path_prefix: &str,
 ) -> String {
     let mut out = String::new();
     let totals = comparison.head_totals();
@@ -268,10 +284,16 @@ fn render(
         root.insert(&file.path.split('/').collect::<Vec<_>>(), idx);
     }
 
-    render_changed_files(comparison, source_url, &mut out);
+    let links = LinkContext {
+        source_url,
+        files_changed_url,
+        head_sha: &head.commit_sha,
+        repo_path_prefix,
+    };
+    render_changed_files(comparison, links, &mut out);
     let _ = writeln!(out, "## Coverage by path\n");
-    render_files(&root.files, comparison, source_url, &mut out);
-    render_tree(&root, 0, comparison, source_url, &mut out);
+    render_files(&root.files, comparison, links, &mut out);
+    render_tree(&root, 0, comparison, links, &mut out);
     out
 }
 
@@ -279,7 +301,7 @@ fn render_tree(
     node: &DirNode,
     depth: usize,
     comparison: &Comparison,
-    source_url: Option<&str>,
+    links: LinkContext<'_>,
     out: &mut String,
 ) {
     for (name, child) in &node.dirs {
@@ -299,8 +321,8 @@ fn render_tree(
             ),
             diff_cell(agg.diff_covered, agg.diff_relevant),
         );
-        render_files(&child.files, comparison, source_url, out);
-        render_tree(child, depth + 1, comparison, source_url, out);
+        render_files(&child.files, comparison, links, out);
+        render_tree(child, depth + 1, comparison, links, out);
         let _ = writeln!(out, "</details>\n");
     }
 }
@@ -308,7 +330,7 @@ fn render_tree(
 fn render_files(
     indices: &[usize],
     comparison: &Comparison,
-    source_url: Option<&str>,
+    links: LinkContext<'_>,
     out: &mut String,
 ) {
     if indices.is_empty() {
@@ -333,7 +355,7 @@ fn render_files(
             out,
             "| {} | {executable} | {covered} | {coverage} | {} | {} |",
             if file.head.is_some() {
-                file_link(&file.path, source_url)
+                file_links(file, links)
             } else {
                 code_path(&file.path)
             },
@@ -344,7 +366,7 @@ fn render_files(
     let _ = writeln!(out);
 }
 
-fn render_changed_files(comparison: &Comparison, source_url: Option<&str>, out: &mut String) {
+fn render_changed_files(comparison: &Comparison, links: LinkContext<'_>, out: &mut String) {
     let changed: Vec<&FileDelta> = comparison
         .files
         .iter()
@@ -364,7 +386,7 @@ fn render_changed_files(comparison: &Comparison, source_url: Option<&str>, out: 
             } else {
                 " open"
             },
-            file_link(&file.path, source_url),
+            file_links(file, links),
             diff_cell(file.diff.covered, file.diff.relevant)
         );
         if file.diff.uncovered_lines.is_empty() {
@@ -372,7 +394,7 @@ fn render_changed_files(comparison: &Comparison, source_url: Option<&str>, out: 
         } else {
             let links = line_ranges(&file.diff.uncovered_lines)
                 .into_iter()
-                .map(|(start, end)| line_link(&file.path, start, end, source_url))
+                .map(|(start, end)| line_link(&file.path, start, end, links.source_url))
                 .collect::<Vec<_>>()
                 .join(", ");
             let _ = writeln!(out, "**Uncovered:** {links}\n");
@@ -395,6 +417,41 @@ fn file_link(path: &str, source_url: Option<&str>) -> String {
         }
         None => code_path(path),
     }
+}
+
+fn file_links(file: &FileDelta, links: LinkContext<'_>) -> String {
+    let primary = file_link(&file.path, links.source_url);
+    if file.diff.relevant == 0 {
+        return primary;
+    }
+    match pr_diff_file_url(
+        &file.path,
+        links.files_changed_url,
+        links.head_sha,
+        links.repo_path_prefix,
+    ) {
+        Some(url) => format!("{primary} · {}", html_link(&url, "PR diff")),
+        None => primary,
+    }
+}
+
+fn pr_diff_file_url(
+    path: &str,
+    files_changed_url: Option<&str>,
+    head_sha: &str,
+    repo_path_prefix: &str,
+) -> Option<String> {
+    let base = files_changed_url.filter(|url| {
+        validate_https_url(url, "Files changed URL").is_ok()
+            && valid_relative_source_path(path)
+            && valid_commit_sha(head_sha)
+    })?;
+    let repo_relative_path = format!("{repo_path_prefix}{path}");
+    let digest = Sha256::digest(repo_relative_path.as_bytes());
+    Some(format!(
+        "{}/{head_sha}#diff-{digest:x}",
+        base.trim_end_matches('/')
+    ))
 }
 
 fn line_link(path: &str, start: u32, end: u32, source_url: Option<&str>) -> String {
@@ -598,6 +655,7 @@ mod tests {
             &comparison,
             Some("https://github.com/owner/repo/blob/abcdef1"),
             Some("https://github.com/owner/repo/pull/7/files"),
+            "",
         );
         assert!(markdown.contains("<summary>📁 <strong>apps/</strong>"));
         assert!(markdown.contains("<summary>&#x2003;📁 <strong>api/</strong>"));
@@ -654,7 +712,16 @@ mod tests {
             ],
         };
         let mut markdown = String::new();
-        render_changed_files(&comparison, None, &mut markdown);
+        render_changed_files(
+            &comparison,
+            LinkContext {
+                source_url: None,
+                files_changed_url: None,
+                head_sha: "abcdef1234567890",
+                repo_path_prefix: "",
+            },
+            &mut markdown,
+        );
 
         assert!(markdown.contains(
             "<details open>\n<summary><code>pkg/uncovered.py</code> — 50.00% (1/2)</summary>"
@@ -718,6 +785,7 @@ mod tests {
             },
             None,
             None,
+            "",
         );
         assert!(markdown.contains("**Head:** <code>&#x60;&#x5C;n&#x3C;h1&#x3E;🦡</code>"));
         assert!(!markdown.contains("\n<h1>"));

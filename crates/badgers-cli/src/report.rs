@@ -91,6 +91,22 @@ pub(crate) fn git_diff_output(repo_root: &Path, range: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+pub(crate) fn git_path_prefix(repo_root: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rev-parse", "--show-prefix"])
+        .output()
+        .context("failed to invoke git for repository path prefix")?;
+    if !output.status.success() {
+        bail!(
+            "`git rev-parse --show-prefix` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 fn write_report(
     head: &CoverageSnapshot,
     comparison: &Comparison,

@@ -9,7 +9,7 @@ use badge_rs_core::diff::parse_unified_diff;
 use badge_rs_github::{CheckAnnotation, CommentAction, GithubClient};
 use clap::Args;
 
-use crate::report::{git_diff_output, read_snapshot};
+use crate::report::{git_diff_output, git_path_prefix, read_snapshot};
 
 #[derive(Args, Debug)]
 pub struct GithubArgs {
@@ -154,22 +154,6 @@ pub fn run(args: &GithubArgs) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn git_path_prefix(repo_root: &std::path::Path) -> Result<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .args(["rev-parse", "--show-prefix"])
-        .output()
-        .context("failed to invoke git for repository path prefix")?;
-    if !output.status.success() {
-        bail!(
-            "`git rev-parse --show-prefix` failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn git_head_sha(repo_root: &std::path::Path) -> Result<String> {
