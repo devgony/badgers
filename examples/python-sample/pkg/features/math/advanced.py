@@ -4,4 +4,5 @@ def square(value: int) -> int:
 
 def cube(value: int) -> int:
     squared = value * value
-    return squared * value
+    cubed = squared * value
+    return cubed
