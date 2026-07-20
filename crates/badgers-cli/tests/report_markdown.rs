@@ -24,6 +24,9 @@ fn snapshot_json(files_json: &str) -> String {
 #[test]
 fn report_markdown_renders_hierarchy_and_source_links() {
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("report-markdown");
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("examples/python-sample");
     let _ = std::fs::remove_dir_all(&dir);
 
     let head = snapshot_json(
@@ -61,8 +64,10 @@ fn report_markdown_renders_hierarchy_and_source_links() {
         .arg(dir.join("base.json"))
         .arg("--diff-file")
         .arg(dir.join("changes.diff"))
+        .arg("--repo-root")
+        .arg(repo_root)
         .arg("--source-url")
-        .arg("https://github.example/owner/repo/blob/abcdef1")
+        .arg("https://github.example/owner/repo/blob/abcdef1/examples/python-sample")
         .arg("--files-changed-url")
         .arg("https://github.example/owner/repo/pull/42/files")
         .arg("--output")
@@ -81,13 +86,16 @@ fn report_markdown_renders_hierarchy_and_source_links() {
     assert!(markdown.contains("🔴 -25.00%p"));
     assert!(markdown.contains("50.00% (1/2)"));
     assert!(markdown.contains(
-        "<a href=\"https://github.example/owner/repo/blob/abcdef1/apps/api/calc.py\"><code>apps/api/calc.py</code></a>"
+        "<a href=\"https://github.example/owner/repo/blob/abcdef1/examples/python-sample/apps/api/calc.py\"><code>apps/api/calc.py</code></a>"
     ));
     assert!(markdown.contains(
-        "<a href=\"https://github.example/owner/repo/blob/abcdef1/apps/api/calc.py#L6\">L6</a>"
+        "<a href=\"https://github.example/owner/repo/blob/abcdef1/examples/python-sample/apps/api/calc.py#L6\">L6</a>"
     ));
     assert!(markdown.contains(
         "<a href=\"https://github.example/owner/repo/pull/42/files\">Files changed and annotations</a>"
+    ));
+    assert!(markdown.contains(
+        "<a href=\"https://github.example/owner/repo/pull/42/files/abcdef1234567890#diff-aa59c2b7a7288e1445d9b3ab8ed2ec58016e3b5843aa5147c79ec3ec69465bb9\">PR diff</a>"
     ));
     assert!(markdown.contains("<details open>\n<summary>"));
     assert!(
@@ -194,6 +202,8 @@ fn report_markdown_does_not_link_removed_files_to_head() {
         .arg(dir.join("head.json"))
         .arg("--base")
         .arg(dir.join("base.json"))
+        .arg("--files-changed-url")
+        .arg("https://github.example/owner/repo/pull/42/files")
         .arg("--output")
         .arg(&output)
         .assert()
@@ -205,4 +215,5 @@ fn report_markdown_does_not_link_removed_files_to_head() {
     assert!(
         !markdown.contains("href=\"https://github.com/owner/repo/blob/abcdef1234567890/pkg/old.py")
     );
+    assert!(!markdown.contains("#diff-"));
 }
