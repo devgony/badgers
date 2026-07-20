@@ -20,6 +20,7 @@ badge-rs-storage = { workspace = true }
 clap = { workspace = true }
 jiff = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 zstd = "0.13"
 
 [dev-dependencies]
