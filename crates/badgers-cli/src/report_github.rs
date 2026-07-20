@@ -10,7 +10,8 @@ use badge_rs_github::{CheckAnnotation, CommentAction, GithubClient};
 use clap::Args;
 
 use crate::github_storage::{
-    DEFAULT_STORAGE_BRANCH, DEFAULT_STORAGE_PREFIX, GithubReportLocation, html_escape,
+    DEFAULT_STORAGE_BRANCH, DEFAULT_STORAGE_PREFIX, GithubReportLocation, SHELL_INSTALL_COMMAND,
+    html_escape,
 };
 use crate::report::{git_diff_output, git_path_prefix, read_snapshot};
 
@@ -377,7 +378,10 @@ fn render_comment(marker: &str, comparison: &Comparison, args: &GithubArgs) -> S
         let report_spec = location
             .report_spec(sha)
             .expect("head SHA is validated before rendering");
-        let command = location.view_command(args.pr);
+        let command = location.installed_view_command(args.pr);
+        let instructions = format!(
+            "# Install once (Cargo is not required)\n{SHELL_INSTALL_COMMAND}\n\n# Open this report\n{command}"
+        );
         let _ = writeln!(out);
         let _ = writeln!(out, "<details><summary>View stored HTML locally</summary>");
         let _ = writeln!(out);
@@ -387,7 +391,11 @@ fn render_comment(marker: &str, comparison: &Comparison, args: &GithubArgs) -> S
             html_escape(&report_spec)
         );
         let _ = writeln!(out);
-        let _ = writeln!(out, "<pre><code>{}</code></pre>", html_escape(&command));
+        let _ = writeln!(
+            out,
+            "<pre><code>{}</code></pre>",
+            html_escape(&instructions)
+        );
         let _ = writeln!(out, "</details>");
     }
     out
@@ -611,7 +619,10 @@ mod tests {
             "<code>reports/archive@coverage/reports:badgers/history/repos/owner/repo/commits/0123456789abcdef0123456789abcdef01234567/html/index.html</code>"
         ));
         assert!(body.contains(
-            "<pre><code>badgers view 5 --repo owner/repo --storage-repo reports/archive --storage-branch coverage/reports --storage-prefix badgers/history</code></pre>"
+            "# Install once (Cargo is not required)\ncurl --proto '=https' --tlsv1.2 -LsSf https://github.com/devgony/badgers/releases/latest/download/badgers-installer.sh | sh"
+        ));
+        assert!(body.contains(
+            "# Open this report\n~/.local/bin/badgers view 5 --repo owner/repo --storage-repo reports/archive --storage-branch coverage/reports --storage-prefix badgers/history</code></pre>"
         ));
     }
 

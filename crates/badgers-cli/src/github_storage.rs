@@ -3,6 +3,7 @@ use badge_rs_storage::Keys;
 
 pub(crate) const DEFAULT_STORAGE_BRANCH: &str = "badgers-coverage";
 pub(crate) const DEFAULT_STORAGE_PREFIX: &str = "badgers";
+pub(crate) const SHELL_INSTALL_COMMAND: &str = "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/devgony/badgers/releases/latest/download/badgers-installer.sh | sh";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GithubReportLocation {
@@ -53,9 +54,13 @@ impl GithubReportLocation {
         ))
     }
 
-    pub fn view_command(&self, pr: u64) -> String {
+    pub fn installed_view_command(&self, pr: u64) -> String {
+        self.view_command_with_binary(pr, "~/.local/bin/badgers")
+    }
+
+    fn view_command_with_binary(&self, pr: u64, binary: &str) -> String {
         let mut command = format!(
-            "badgers view {pr} --repo {} --storage-repo {}",
+            "{binary} view {pr} --repo {} --storage-repo {}",
             shell_quote(&self.source_repo),
             shell_quote(&self.storage_repo)
         );
@@ -200,8 +205,12 @@ mod tests {
             "badgers/history/repos/owner/project/commits/0123456789abcdef0123456789abcdef01234567/html"
         );
         assert_eq!(
-            location.view_command(547),
+            location.view_command_with_binary(547, "badgers"),
             "badgers view 547 --repo owner/project --storage-repo reports/archive --storage-branch coverage/reports --storage-prefix badgers/history"
+        );
+        assert_eq!(
+            location.installed_view_command(547),
+            "~/.local/bin/badgers view 547 --repo owner/project --storage-repo reports/archive --storage-branch coverage/reports --storage-prefix badgers/history"
         );
     }
 
@@ -215,7 +224,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            location.view_command(5),
+            location.view_command_with_binary(5, "badgers"),
             "badgers view 5 --repo owner/project --storage-repo owner/project"
         );
     }

@@ -6,6 +6,17 @@ Badgers is a coverage checker for Rust and Python projects. It keeps an eye on p
 
 ## Install
 
+Install a prebuilt binary without Cargo:
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/devgony/badgers/releases/latest/download/badgers-installer.sh | sh
+```
+
+The installer detects macOS/Linux and ARM64/x86-64, verifies the release
+checksum, and writes the binary to `~/.local/bin/badgers`. Rust developers can
+instead build from crates.io:
+
 ```bash
 cargo install badge-rs
 ```

@@ -1,0 +1,83 @@
+name: Release CLI binaries
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing GitHub Release tag to upload assets to
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    env:
+      BADGERS_RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      BADGERS_TARGET: ${{ matrix.target }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BADGERS_RELEASE_TAG }}
+
+      - name: Build release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup target add "$BADGERS_TARGET"
+          cargo build --locked --release --package badge-rs \
+            --bin badgers --target "$BADGERS_TARGET"
+
+      - name: Package and upload release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          ASSET="badgers-${BADGERS_TARGET}.tar.gz"
+          PACKAGE_DIR=$(mktemp -d)
+          cp "target/${BADGERS_TARGET}/release/badgers" "$PACKAGE_DIR/badgers"
+          tar -C "$PACKAGE_DIR" -czf "$ASSET" badgers
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$ASSET" > "$ASSET.sha256"
+          else
+            shasum -a 256 "$ASSET" > "$ASSET.sha256"
+          fi
+          gh release upload "$BADGERS_RELEASE_TAG" \
+            "$ASSET" "$ASSET.sha256" --clobber
+
+  installer:
+    name: Upload shell installer
+    needs: build
+    runs-on: ubuntu-24.04
+    env:
+      BADGERS_RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BADGERS_RELEASE_TAG }}
+
+      - name: Upload installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp scripts/install.sh badgers-installer.sh
+          gh release upload "$BADGERS_RELEASE_TAG" \
+            badgers-installer.sh --clobber
