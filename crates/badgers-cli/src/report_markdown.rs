@@ -285,9 +285,10 @@ fn render_tree(
     for (name, child) in &node.dirs {
         let agg = aggregate(child, &comparison.files);
         let open = if depth == 0 { " open" } else { "" };
+        let indent = "&#x2003;".repeat(depth);
         let _ = writeln!(
             out,
-            "<details{open}>\n<summary>📁 <strong>{}/</strong> — {} ({}/{}) · Δ {} · Diff {}</summary>\n",
+            "<details{open}>\n<summary>{indent}📁 <strong>{}/</strong> — {} ({}/{}) · Δ {} · Diff {}</summary>\n",
             markdown_html_text(name),
             fmt_pct(coverage_pct(agg.head_covered, agg.head_executable)),
             agg.head_covered,
@@ -599,8 +600,8 @@ mod tests {
             Some("https://github.com/owner/repo/pull/7/files"),
         );
         assert!(markdown.contains("<summary>📁 <strong>apps/</strong>"));
-        assert!(markdown.contains("<summary>📁 <strong>api/</strong>"));
-        assert!(markdown.contains("<summary>📁 <strong>src/</strong>"));
+        assert!(markdown.contains("<summary>&#x2003;📁 <strong>api/</strong>"));
+        assert!(markdown.contains("<summary>&#x2003;&#x2003;📁 <strong>src/</strong>"));
         assert!(markdown.contains(
             "<a href=\"https://github.com/owner/repo/blob/abcdef1/apps/api/src/app.py\"><code>apps/api/src/app.py</code></a>"
         ));
