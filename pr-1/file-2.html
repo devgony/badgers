@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
-<title>Badgers Coverage Report</title><style>
+<title>pkg/features/math/advanced.py - Badgers Coverage</title><style>
 :root { color-scheme: light; }
 * { box-sizing: border-box; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -64,49 +64,26 @@ tr:target td { outline: 2px solid #0969da; }
 .tree summary.row:hover, .tree .row.file:hover { background: #eaeef2; }
 </style></head>
 <body>
-<header><h1>🦡 Badgers Coverage Report</h1>
-<div class="meta">devgony/badgers @ 052a192 · generated 2026-07-21T06:18:30.607350006Z</div></header>
+<header><h1>pkg/features/math/advanced.py</h1>
+<div class="meta"><a href="index.html" style="color:#d0d7de">← index</a> ·
+coverage 50.00% · <span class="flat">±0.00%p</span> · diff coverage n/a (0/0)</div></header>
 <main>
-<div class="cards">
-<div class="card"><div class="label">Total line coverage</div>
-<div class="value">78.12%</div>
-<div class="sub">25/32 lines · <span class="up">+16.59%p</span> vs base snapshot</div></div>
-<div class="card"><div class="label">Diff coverage (changed lines)</div>
-<div class="value">83.33%</div>
-<div class="sub">5/6 changed executable lines</div></div>
+<div class="legend">
+<span style="background:#e6ffec">covered</span>
+<span style="background:#ffebe9">uncovered</span>
+<span style="background:#abf2bc">covered + changed</span>
+<span style="background:#ffb3ad">uncovered + changed</span>
+<span>± = line changed in this PR</span>
 </div>
-<div class="tree">
-<div class="row header">
-<span class="cell name">File</span><span class="cell">Lines</span>
-<span class="cell">Covered</span><span class="cell">Coverage</span>
-<span class="cell">Δ</span><span class="cell">Diff coverage</span></div>
-<details class="dirnode" open><summary class="row dir">
-<span class="cell name" style="padding-left:12px">pkg/</span>
-<span class="cell">32</span><span class="cell">25</span>
-<span class="cell">78.12%</span><span class="cell"><span class="up">+16.59%p</span></span>
-<span class="cell">5/6 (83.33%)</span></summary>
-<details class="dirnode"><summary class="row dir">
-<span class="cell name" style="padding-left:30px">features/math/</span>
-<span class="cell">6</span><span class="cell">3</span>
-<span class="cell">50.00%</span><span class="cell"><span class="flat">±0.00%p</span></span>
-<span class="cell">–</span></summary>
-<div class="row file">
-<span class="cell name" style="padding-left:66px"><a href="file-2.html">advanced.py</a></span>
-<span class="cell">6</span><span class="cell">3</span>
-<span class="cell">50.00%</span><span class="cell"><span class="flat">±0.00%p</span></span>
-<span class="cell">–</span></div>
-</details>
-<div class="row file">
-<span class="cell name" style="padding-left:48px"><a href="file-0.html">__init__.py</a></span>
-<span class="cell">0</span><span class="cell">0</span>
-<span class="cell"><span class="flat">no executable lines</span></span><span class="cell"><span class="flat">n/a</span></span>
-<span class="cell">–</span></div>
-<div class="row file">
-<span class="cell name" style="padding-left:48px"><a href="file-1.html">calc.py</a></span>
-<span class="cell">26</span><span class="cell">22</span>
-<span class="cell">84.62%</span><span class="cell"><span class="up">+19.62%p</span></span>
-<span class="cell">5/6 (83.33%)</span></div>
-</details>
 
-</div>
+<table class="code"><tbody>
+<tr id="L1" class="cov"><td class="ln"><a href="#L1">1</a></td><td class="hits">1</td><td class="chg"></td><td>def square(value: int) -&gt; int:</td></tr>
+<tr id="L2" class="cov"><td class="ln"><a href="#L2">2</a></td><td class="hits">1</td><td class="chg"></td><td>    return value * value</td></tr>
+<tr id="L3"><td class="ln"><a href="#L3">3</a></td><td class="hits"></td><td class="chg"></td><td></td></tr>
+<tr id="L4"><td class="ln"><a href="#L4">4</a></td><td class="hits"></td><td class="chg"></td><td></td></tr>
+<tr id="L5" class="cov"><td class="ln"><a href="#L5">5</a></td><td class="hits">1</td><td class="chg"></td><td>def cube(value: int) -&gt; int:</td></tr>
+<tr id="L6" class="miss"><td class="ln"><a href="#L6">6</a></td><td class="hits">0</td><td class="chg"></td><td>    squared = value * value</td></tr>
+<tr id="L7" class="miss"><td class="ln"><a href="#L7">7</a></td><td class="hits">0</td><td class="chg"></td><td>    cubed = squared * value</td></tr>
+<tr id="L8" class="miss"><td class="ln"><a href="#L8">8</a></td><td class="hits">0</td><td class="chg"></td><td>    return cubed</td></tr>
+</tbody></table>
 </main></body></html>
