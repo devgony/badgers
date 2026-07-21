@@ -43,6 +43,11 @@ inputs:
       Publish warning annotations for uncovered changed executable lines.
       Requires `checks: write`; publishing failures only warn.
     default: "true"
+  fail-on-uncovered:
+    description: >
+      Fail after publishing reports when changed executable lines remain
+      uncovered in a pull request.
+    default: "false"
   markdown-summary:
     description: >
       Publish a navigable Markdown coverage report to the job summary.
@@ -267,7 +272,10 @@ runs:
           --repo-root . -o coverage-report
 
     - name: Generate Markdown coverage summary
-      if: inputs.markdown-summary == 'true' || inputs.github-storage-repo != ''
+      if: >-
+        inputs.markdown-summary == 'true' ||
+        inputs.github-storage-repo != '' ||
+        inputs.fail-on-uncovered == 'true'
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
@@ -276,6 +284,7 @@ runs:
         BADGERS_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         BADGERS_STORAGE_REPO: ${{ inputs.github-storage-repo }}
         BADGERS_MARKDOWN_SUMMARY: ${{ inputs.markdown-summary }}
+        BADGERS_FAIL_ON_UNCOVERED: ${{ inputs.fail-on-uncovered }}
         BADGERS_FILES_CHANGED_URL: ${{ steps.report-navigation.outputs.files-changed-url }}
       run: |
         set -euo pipefail
@@ -305,7 +314,7 @@ runs:
 
         REPORT_PATH="$RUNNER_TEMP/badgers-coverage-summary.md"
         COMPARISON_ARGS=()
-        if [ -n "$BADGERS_STORAGE_REPO" ]; then
+        if [ -n "$BADGERS_STORAGE_REPO" ] || [ "$BADGERS_FAIL_ON_UNCOVERED" = "true" ]; then
           COMPARISON_ARGS=(--comparison-output "$RUNNER_TEMP/badgers-comparison.json")
         fi
         NAVIGATION_ARGS=()
@@ -696,3 +705,26 @@ runs:
           "${LABEL_ARGS[@]}" "${URL_ARGS[@]}" "${STORAGE_ARGS[@]}" \
           "${PUBLISH_ARGS[@]}" \
           --soft-fail
+
+    - name: Enforce changed-line coverage
+      if: github.event_name == 'pull_request' && inputs.fail-on-uncovered == 'true'
+      shell: bash
+      env:
+        BADGERS_COMPARISON: ${{ runner.temp }}/badgers-comparison.json
+      run: |
+        set -euo pipefail
+        if [ ! -f "$BADGERS_COMPARISON" ]; then
+          echo "::notice::No coverage comparison is available; skipping fail-on-uncovered gate"
+          exit 0
+        fi
+
+        UNCOVERED=$(jq \
+          '[.comparison.files[]? | (.diff.uncovered_lines // [] | unique | length)] | add // 0' \
+          "$BADGERS_COMPARISON")
+        if [ "$UNCOVERED" -eq 0 ]; then
+          echo "badgers: no uncovered changed executable lines"
+          exit 0
+        fi
+
+        echo "::error::badgers: $UNCOVERED uncovered changed executable lines (fail-on-uncovered is enabled)"
+        exit 1
