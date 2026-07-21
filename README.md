@@ -35,11 +35,25 @@ report for a pull request with:
 badgers view 547
 ```
 
-The command infers the source repository from the checkout's local `origin`
-remote, follows `prs/547/latest.json`, caches the referenced HTML bundle, and
-opens its self-contained `index.html`. Same-repository storage is cloned
-directly through the existing Git remote, so repository detection does not
-require a GitHub API call. Use `--repo`, `--storage-repo`,
+Coding agents can read the latest stored coverage diff directly in the
+terminal. The pull request number is optional when the current branch has an
+open pull request discoverable by GitHub CLI:
+
+```bash
+badgers diff 547
+# or, from the pull request branch
+badgers diff
+```
+
+The output is a compact, deterministic list of uncovered changed executable
+lines. It also includes total and changed-line coverage summaries; complete
+human-oriented reports remain available through Markdown and `badgers view`.
+
+Both commands infer the source repository from the checkout's local `origin`.
+The `view` command follows `prs/547/latest.json`, caches the referenced HTML
+bundle, and opens its self-contained `index.html`. Same-repository storage is
+cloned directly through the existing Git remote, so repository detection does
+not require a GitHub API call. Use `--repo`, `--storage-repo`,
 `--storage-branch`, and `--storage-prefix` when the report storage differs
 from the defaults. Cross-repository storage uses the authenticated GitHub CLI.
 Pass `--no-open` to download the bundle and print its exact local path without

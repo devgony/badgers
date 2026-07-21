@@ -1,4 +1,5 @@
 mod baseline_fetch;
+mod diff;
 mod github_storage;
 mod python;
 mod report;
@@ -35,6 +36,8 @@ pub enum Command {
     Baseline(BaselineCommand),
     #[command(subcommand)]
     Setup(SetupCommand),
+    /// Show the latest stored coverage diff for a pull request
+    Diff(diff::DiffArgs),
     /// Download and open the latest stored HTML report for a pull request
     View(view::ViewArgs),
 }
@@ -75,6 +78,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Snapshot(SnapshotCommand::Push(args)) => snapshot_push::run(&args),
         Command::Baseline(BaselineCommand::Fetch(args)) => baseline_fetch::run(&args),
         Command::Setup(SetupCommand::Gcs(args)) => setup_gcs::run(&args),
+        Command::Diff(args) => diff::run(&args),
         Command::View(args) => view::run(&args),
     }
 }

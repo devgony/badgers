@@ -3,13 +3,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail, ensure};
-use badge_rs_storage::{BranchPointer, POINTER_SCHEMA_VERSION};
 use clap::Args;
 use sha2::{Digest, Sha256};
 
 use crate::github_storage::{
-    DEFAULT_STORAGE_BRANCH, DEFAULT_STORAGE_PREFIX, GithubReportLocation, parse_repo_url,
-    validate_repo_slug, validate_sha,
+    DEFAULT_STORAGE_BRANCH, DEFAULT_STORAGE_PREFIX, GithubReportLocation, checked_repo_path,
+    clone_storage_branch, read_pointer, resolve_source_repo,
 };
 
 #[derive(Args, Debug)]
@@ -95,159 +94,6 @@ pub fn run(args: &ViewArgs) -> Result<()> {
         open_browser(&index)?;
     }
     Ok(())
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct SourceRepository {
-    slug: String,
-    origin_url: Option<String>,
-}
-
-fn resolve_source_repo(explicit: Option<&str>) -> Result<SourceRepository> {
-    let origin_url = local_origin_url();
-    let origin_repo = origin_url.as_deref().and_then(parse_repo_url);
-
-    let slug = if let Some(repo) = explicit {
-        repo.to_string()
-    } else if let Ok(repo) = std::env::var("GITHUB_REPOSITORY")
-        && !repo.is_empty()
-    {
-        repo
-    } else if let Some(repo) = &origin_repo {
-        repo.clone()
-    } else {
-        github_cli_repo()?
-    };
-    validate_repo_slug(&slug, "source repository")?;
-    let origin_url = (origin_repo.as_deref() == Some(&slug))
-        .then_some(origin_url)
-        .flatten();
-    Ok(SourceRepository { slug, origin_url })
-}
-
-fn github_cli_repo() -> Result<String> {
-    let output = Command::new("gh")
-        .args([
-            "repo",
-            "view",
-            "--json",
-            "nameWithOwner",
-            "--jq",
-            ".nameWithOwner",
-        ])
-        .output()
-        .context("running gh repo view; install and authenticate GitHub CLI or pass --repo")?;
-    if !output.status.success() {
-        bail!(
-            "gh repo view failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    let repo = String::from_utf8(output.stdout)
-        .context("gh repo view returned non-UTF-8 output")?
-        .trim()
-        .to_string();
-    validate_repo_slug(&repo, "repository reported by gh")?;
-    Ok(repo)
-}
-
-fn local_origin_url() -> Option<String> {
-    let output = Command::new("git")
-        .args(["config", "--get", "remote.origin.url"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let url = String::from_utf8(output.stdout).ok()?.trim().to_string();
-    (!url.is_empty()).then_some(url)
-}
-
-fn clone_storage_branch(
-    location: &GithubReportLocation,
-    source_origin_url: Option<&str>,
-    destination: &Path,
-) -> Result<()> {
-    let status = if let Some(origin_url) =
-        source_origin_url.filter(|_| location.storage_repo == location.source_repo)
-    {
-        Command::new("git")
-            .args([
-                "clone",
-                "--quiet",
-                "--depth",
-                "1",
-                "--single-branch",
-                "--branch",
-            ])
-            .arg(&location.storage_branch)
-            .arg(origin_url)
-            .arg(destination)
-            .status()
-            .context("running git clone for the local origin remote")?
-    } else {
-        Command::new("gh")
-            .args(["repo", "clone", &location.storage_repo])
-            .arg(destination)
-            .arg("--")
-            .args(["--quiet", "--depth", "1", "--single-branch", "--branch"])
-            .arg(&location.storage_branch)
-            .status()
-            .context("running gh repo clone; install and authenticate GitHub CLI first")?
-    };
-    ensure!(
-        status.success(),
-        "could not clone {} branch {}",
-        location.storage_repo,
-        location.storage_branch
-    );
-    Ok(())
-}
-
-fn read_pointer(
-    location: &GithubReportLocation,
-    pr: u64,
-    checkout: &Path,
-) -> Result<BranchPointer> {
-    let key = location.pr_pointer_path(pr);
-    let path = checked_repo_path(checkout, &key)
-        .with_context(|| format!("locating PR #{pr} pointer at {key}"))?;
-    ensure!(path.is_file(), "PR #{pr} pointer is not a file");
-    let data = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-    let pointer: BranchPointer =
-        serde_json::from_slice(&data).with_context(|| format!("parsing {}", path.display()))?;
-    ensure!(
-        pointer.schema_version == POINTER_SCHEMA_VERSION,
-        "unsupported PR pointer schema version {}",
-        pointer.schema_version
-    );
-    ensure!(
-        pointer.branch == format!("pr-{pr}"),
-        "pointer belongs to {}, not PR #{pr}",
-        pointer.branch
-    );
-    validate_sha(&pointer.commit_sha)?;
-    Ok(pointer)
-}
-
-fn checked_repo_path(root: &Path, key: &str) -> Result<PathBuf> {
-    ensure!(!key.is_empty(), "stored report path is empty");
-    let mut path = root.to_path_buf();
-    for component in key.split('/') {
-        ensure!(
-            !component.is_empty() && !matches!(component, "." | "..") && !component.contains('\\'),
-            "stored report contains an unsafe path: {key}"
-        );
-        path.push(component);
-        let metadata = std::fs::symlink_metadata(&path)
-            .with_context(|| format!("reading stored report path {}", path.display()))?;
-        ensure!(
-            !metadata.file_type().is_symlink(),
-            "stored report path contains a symlink: {}",
-            path.display()
-        );
-    }
-    Ok(path)
 }
 
 fn cached_report_dir(root: &Path, location: &GithubReportLocation, pr: u64, sha: &str) -> PathBuf {
@@ -397,32 +243,6 @@ mod tests {
     }
 
     #[test]
-    fn reads_matching_pointer_and_rejects_wrong_pr() {
-        let temp = tempfile::tempdir().unwrap();
-        let location = location();
-        let pointer_path = temp.path().join(location.pr_pointer_path(547));
-        std::fs::create_dir_all(pointer_path.parent().unwrap()).unwrap();
-        let pointer = BranchPointer {
-            schema_version: POINTER_SCHEMA_VERSION,
-            branch: "pr-547".into(),
-            commit_sha: SHA.into(),
-            committed_at: "2026-07-20T00:00:00Z".into(),
-            snapshot_key: "snapshot".into(),
-            comparison_key: None,
-            report_key: None,
-            html_prefix: Some(location.html_prefix(SHA).unwrap()),
-            updated_at: "2026-07-20T00:00:00Z".into(),
-        };
-        std::fs::write(&pointer_path, serde_json::to_vec(&pointer).unwrap()).unwrap();
-        assert_eq!(read_pointer(&location, 547, temp.path()).unwrap(), pointer);
-
-        let mut wrong = pointer;
-        wrong.branch = "pr-548".into();
-        std::fs::write(&pointer_path, serde_json::to_vec(&wrong).unwrap()).unwrap();
-        assert!(read_pointer(&location, 547, temp.path()).is_err());
-    }
-
-    #[test]
     fn copies_report_into_commit_scoped_cache() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
@@ -438,26 +258,6 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(destination.join("nested/file.html")).unwrap(),
             "file"
-        );
-    }
-
-    #[test]
-    fn recognizes_when_local_origin_can_clone_storage_directly() {
-        let source = SourceRepository {
-            slug: "owner/project".into(),
-            origin_url: Some("git@github.com:owner/project.git".into()),
-        };
-        let location = GithubReportLocation::new(
-            &source.slug,
-            "owner/project",
-            DEFAULT_STORAGE_BRANCH,
-            DEFAULT_STORAGE_PREFIX,
-        )
-        .unwrap();
-        assert_eq!(location.storage_repo, location.source_repo);
-        assert_eq!(
-            source.origin_url.as_deref(),
-            Some("git@github.com:owner/project.git")
         );
     }
 }
