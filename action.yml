@@ -6,6 +6,12 @@ branding:
   color: orange
 
 inputs:
+  cli-version:
+    description: >
+      Badgers CLI release to install. 'auto' uses the release matching a
+      versioned Action ref and falls back to a source build for main or SHAs;
+      use an exact vX.Y.Z tag or 'source' to override that behavior.
+    default: "auto"
   working-directory:
     description: Directory containing the Python project (repo-relative)
     default: "."
@@ -82,13 +88,49 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: dtolnay/rust-toolchain@stable
+    - name: Install prebuilt badgers
+      id: badgers-cli
+      shell: bash
+      env:
+        BADGERS_ACTION_PATH: ${{ github.action_path }}
+        BADGERS_ACTION_REF: ${{ github.action_ref }}
+        BADGERS_BIN_DIR: ${{ runner.temp }}/badgers-bin
+        BADGERS_CLI_VERSION: ${{ inputs.cli-version }}
+        BADGERS_RUNNER_ARCH: ${{ runner.arch }}
+        BADGERS_RUNNER_OS: ${{ runner.os }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        if ! VERSION=$(python3 "$BADGERS_ACTION_PATH/scripts/resolve_action_release.py" \
+          --cli-version "$BADGERS_CLI_VERSION" \
+          --action-ref "$BADGERS_ACTION_REF" \
+          --runner-os "$BADGERS_RUNNER_OS" \
+          --runner-arch "$BADGERS_RUNNER_ARCH"); then
+          exit 1
+        fi
 
-    - uses: Swatinem/rust-cache@v2
+        if [ -n "$VERSION" ] \
+          && BADGERS_VERSION="$VERSION" BADGERS_INSTALL_DIR="$BADGERS_BIN_DIR" \
+            sh "$BADGERS_ACTION_PATH/scripts/install.sh"; then
+          echo "$BADGERS_BIN_DIR" >> "$GITHUB_PATH"
+          echo "installed=true" >> "$GITHUB_OUTPUT"
+        else
+          if [ -n "$VERSION" ]; then
+            echo "::warning::Could not install badgers $VERSION; falling back to a source build"
+          fi
+          echo "installed=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - if: steps.badgers-cli.outputs.installed != 'true'
+      uses: dtolnay/rust-toolchain@stable
+
+    - if: steps.badgers-cli.outputs.installed != 'true'
+      uses: Swatinem/rust-cache@v2
       with:
         workspaces: ${{ github.action_path }}
 
     - name: Build badgers
+      if: steps.badgers-cli.outputs.installed != 'true'
       shell: bash
       env:
         BADGERS_ACTION_PATH: ${{ github.action_path }}

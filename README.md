@@ -59,8 +59,11 @@ from the defaults. Cross-repository storage uses the authenticated GitHub CLI.
 Pass `--no-open` to download the bundle and print its exact local path without
 opening a browser.
 
-CI workflows do not need the binary: the `devgony/badgers` GitHub Action builds
-and runs it on the runner.
+CI workflows do not need to install the binary themselves. Versioned
+`devgony/badgers` Action releases download the matching prebuilt binary and
+verify its checksum. Development refs such as `main`, commit SHAs, unsupported
+platforms, and releases without binary assets fall back to building from
+source.
 
 ## What It Does
 
@@ -123,6 +126,12 @@ steps:
       github-storage-token: ${{ secrets.BADGERS_STORAGE_TOKEN }}
       markdown-summary: true
 ```
+
+`cli-version` defaults to `auto`: `@v1` selects the newest stable `v1.x.y`
+release containing binaries for the current runner, while an exact Action ref
+such as `@v1.2.3` selects only that release. Set an exact `cli-version` to use a
+released CLI from `main` or a commit SHA, or set it to `source` to force a local
+release build.
 
 `markdown-summary` is opt-in. When enabled, Badgers adds a navigable coverage
 report to the GitHub Actions job summary. With GitHub repository storage
