@@ -39,8 +39,7 @@ inputs:
     default: "true"
   markdown-summary:
     description: >
-      Publish a navigable Markdown coverage report to the job summary and
-      upload the Markdown file as an artifact.
+      Publish a navigable Markdown coverage report to the job summary.
     default: "false"
   github-storage-repo:
     description: >
@@ -286,28 +285,15 @@ runs:
             {
               echo '## 🦡 Badgers Coverage Report'
               echo
-              echo "The full Markdown report is ${SIZE} bytes, so it is available in the coverage-markdown artifact instead of the 1 MiB-limited job summary."
+              if [ -n "$BADGERS_STORAGE_REPO" ]; then
+                echo "The full Markdown report is ${SIZE} bytes, so it exceeds the 1 MiB job summary limit. It is available as README.md in GitHub repository storage."
+              else
+                echo "The full Markdown report is ${SIZE} bytes, so it exceeds the 1 MiB job summary limit. Configure GitHub repository storage to publish the complete report."
+              fi
             } >> "$GITHUB_STEP_SUMMARY"
-            echo "::notice::Markdown report exceeds the job summary size limit; use the coverage-markdown artifact"
+            echo "::notice::Markdown report exceeds the job summary size limit"
           fi
         fi
-
-    - uses: actions/upload-artifact@v4
-      with:
-        name: coverage-snapshot
-        path: ${{ inputs.working-directory }}/coverage-snapshot.json
-
-    - uses: actions/upload-artifact@v4
-      with:
-        name: coverage-report
-        path: ${{ inputs.working-directory }}/coverage-report/
-
-    - name: Upload Markdown coverage report
-      if: inputs.markdown-summary == 'true'
-      uses: actions/upload-artifact@v4
-      with:
-        name: coverage-markdown
-        path: ${{ runner.temp }}/badgers-coverage-summary.md
 
     - name: Push snapshot to GCS
       if: >-

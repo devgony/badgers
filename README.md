@@ -77,7 +77,8 @@ gs://coverage-bucket/badgers/repos/{owner}/{repo}/
   prs/{number}/latest.json
 ```
 
-GitHub Actions artifacts can be supported later for small projects or demos, but they are not the recommended default for long-term coverage history.
+Badgers does not upload generated snapshots or reports as GitHub Actions
+artifacts. Use GCS or GitHub repository storage for durable coverage history.
 
 ## GitHub Actions Sketch
 
@@ -110,8 +111,9 @@ steps:
 ```
 
 `markdown-summary` is opt-in. When enabled, Badgers adds a navigable coverage
-report to the GitHub Actions job summary and uploads the same report as the
-`coverage-markdown` artifact. The existing HTML artifact is still produced.
+report to the GitHub Actions job summary. With GitHub repository storage
+enabled, the complete Markdown report is also stored as `README.md` alongside
+the snapshot and HTML bundle.
 
 `check-annotations` defaults to `true`. With `checks: write`, Badgers creates a
 `Badgers diff coverage` check and places warnings for uncovered changed
