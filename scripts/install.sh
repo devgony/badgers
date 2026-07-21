@@ -3,6 +3,7 @@ set -eu
 
 repository="devgony/badgers"
 install_dir="${BADGERS_INSTALL_DIR:-${HOME}/.local/bin}"
+version="${BADGERS_VERSION:-latest}"
 os="${BADGERS_INSTALLER_OS:-$(uname -s)}"
 arch="${BADGERS_INSTALLER_ARCH:-$(uname -m)}"
 
@@ -35,7 +36,24 @@ if [ "${#}" -ne 0 ]; then
 fi
 
 asset="badgers-${target}.tar.gz"
-base_url="https://github.com/${repository}/releases/latest/download"
+case "${version}" in
+  latest)
+    base_url="https://github.com/${repository}/releases/latest/download"
+    ;;
+  v[0-9]*.[0-9]*.[0-9]*)
+    case "${version}" in
+      *[!0-9A-Za-z._+-]*)
+        echo "error: invalid BADGERS_VERSION ${version}" >&2
+        exit 2
+        ;;
+    esac
+    base_url="https://github.com/${repository}/releases/download/${version}"
+    ;;
+  *)
+    echo "error: BADGERS_VERSION must be latest or an exact vX.Y.Z tag" >&2
+    exit 2
+    ;;
+esac
 temporary_dir=$(mktemp -d)
 trap 'rm -rf "${temporary_dir}"' EXIT HUP INT TERM
 

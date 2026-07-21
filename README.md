@@ -59,8 +59,11 @@ from the defaults. Cross-repository storage uses the authenticated GitHub CLI.
 Pass `--no-open` to download the bundle and print its exact local path without
 opening a browser.
 
-CI workflows do not need the binary: the `devgony/badgers` GitHub Action builds
-and runs it on the runner.
+CI workflows do not need to install the binary themselves. Versioned
+`devgony/badgers` Action releases download the matching prebuilt binary and
+verify its checksum. Development refs such as `main`, commit SHAs, unsupported
+platforms, and releases without binary assets fall back to building from
+source.
 
 ## What It Does
 
@@ -123,6 +126,13 @@ steps:
       github-storage-token: ${{ secrets.BADGERS_STORAGE_TOKEN }}
       markdown-summary: true
 ```
+
+`cli-version` defaults to `auto`: `@v1` selects the newest stable `v1.x.y`
+release containing binaries for the current runner, while an exact Action ref
+such as `@v1.2.3` selects only that release. Set an exact `cli-version` to use a
+released CLI from `main` or a commit SHA, set it to `latest` to track the newest
+stable prebuilt CLI independently of the Action ref, or set it to `source` to
+force a local release build.
 
 `markdown-summary` is opt-in. When enabled, Badgers adds a navigable coverage
 report to the GitHub Actions job summary. With GitHub repository storage
@@ -212,6 +222,26 @@ repository running the workflow and the job grants `contents: write`. For a
 different or private repository, pass a GitHub App installation token or a
 fine-grained PAT with Contents write access. Repository writes are skipped for
 pull requests from forks.
+
+## Development
+
+Install the CLI from the current checkout with:
+
+```bash
+make install
+```
+
+Create a release from a clean, pushed `main` branch with:
+
+```bash
+make release VERSION=1.2.3
+```
+
+The release target checks formatting, runs the workspace tests and Clippy,
+publishes the GitHub Release that triggers binary packaging, and advances the
+stable major tag for non-prerelease versions. Versions containing a prerelease
+suffix such as `1.2.3-rc.1` are marked as prereleases and do not move the major
+tag.
 
 ## Status
 
