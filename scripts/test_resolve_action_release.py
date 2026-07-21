@@ -54,11 +54,14 @@ class ResolveActionReleaseTests(unittest.TestCase):
     def test_source_and_exact_overrides(self) -> None:
         self.assertIsNone(resolver.release_selector("source", "v1"))
         self.assertEqual(
+            resolver.release_selector("latest", "main"), ("latest", "latest")
+        )
+        self.assertEqual(
             resolver.release_selector("v2.3.4-rc.1", "main"),
             ("exact", "v2.3.4-rc.1"),
         )
         with self.assertRaisesRegex(ValueError, "cli-version"):
-            resolver.release_selector("latest", "v1")
+            resolver.release_selector("newest", "v1")
 
     def test_major_selects_highest_stable_release_with_both_assets(self) -> None:
         target = "x86_64-unknown-linux-gnu"
@@ -71,6 +74,19 @@ class ResolveActionReleaseTests(unittest.TestCase):
         ]
         self.assertEqual(
             resolver.select_release(releases, "major", "v1", target), "v1.2.0"
+        )
+
+    def test_latest_selects_highest_stable_release_across_majors(self) -> None:
+        target = "x86_64-unknown-linux-gnu"
+        releases = [
+            release("v2.1.0", target, checksum=False),
+            release("v3.0.0-rc.1", target, prerelease=True),
+            release("v1.9.0", target),
+            release("v2.0.0", target),
+        ]
+        self.assertEqual(
+            resolver.select_release(releases, "latest", "latest", target),
+            "v2.0.0",
         )
 
     def test_exact_release_requires_matching_assets(self) -> None:
