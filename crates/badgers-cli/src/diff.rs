@@ -1,16 +1,16 @@
-use std::fmt::Write as _;
 use std::io::Read as _;
 use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail, ensure};
-use badge_rs_core::compare::{COMPARISON_SCHEMA_VERSION, Comparison, ComparisonDocument};
+use badge_rs_core::compare::{COMPARISON_SCHEMA_VERSION, ComparisonDocument};
 use clap::Args;
 
 use crate::github_storage::{
     DEFAULT_STORAGE_BRANCH, DEFAULT_STORAGE_PREFIX, GithubReportLocation, checked_repo_path,
     clone_storage_branch, read_pointer, resolve_source_repo,
 };
+use crate::render::render_comparison;
 
 const MAX_COMPARISON_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -135,130 +135,16 @@ fn read_comparison(
 }
 
 fn render(pr: u64, document: &ComparisonDocument) -> String {
-    let comparison = &document.comparison;
-    let uncovered: usize = comparison
-        .files
-        .iter()
-        .map(|file| {
-            let mut lines = file.diff.uncovered_lines.clone();
-            lines.sort_unstable();
-            lines.dedup();
-            lines.len()
-        })
-        .sum();
-    let noun = if uncovered == 1 { "line" } else { "lines" };
-    let mut out = String::new();
-    if uncovered == 0 {
-        let _ = writeln!(out, "Coverage diff: no uncovered changed executable lines");
-    } else {
-        let _ = writeln!(
-            out,
-            "Coverage diff: {uncovered} uncovered changed executable {noun}"
-        );
-    }
     let short_sha = &document.head_sha[..document.head_sha.len().min(7)];
-    let _ = writeln!(out, "PR: #{pr} @ {short_sha}");
-
-    let totals = comparison.head_totals();
-    let _ = writeln!(
-        out,
-        "Total coverage: {} ({})",
-        format_pct(totals.pct()),
-        format_delta(comparison)
-    );
-    let diff = comparison.diff_totals();
-    let _ = writeln!(
-        out,
-        "Changed-line coverage: {} ({}/{})",
-        format_pct(diff.pct()),
-        diff.covered,
-        diff.relevant
-    );
-
-    if uncovered > 0 {
-        let mut files: Vec<_> = comparison
-            .files
-            .iter()
-            .filter(|file| !file.diff.uncovered_lines.is_empty())
-            .collect();
-        files.sort_by(|a, b| a.path.cmp(&b.path));
-        for file in files {
-            let mut lines = file.diff.uncovered_lines.clone();
-            lines.sort_unstable();
-            lines.dedup();
-            let ranges = line_ranges(&lines);
-            let _ = writeln!(
-                out,
-                "{}:{} [changed-uncovered]",
-                escape_path(&file.path),
-                ranges.join(",")
-            );
-        }
-    }
-    out
-}
-
-fn format_pct(value: Option<f64>) -> String {
-    value
-        .map(|pct| format!("{pct:.2}%"))
-        .unwrap_or_else(|| "n/a".into())
-}
-
-fn format_delta(comparison: &Comparison) -> String {
-    if !comparison.base_available {
-        return "no baseline".into();
-    }
-    comparison
-        .delta_pct()
-        .map(|delta| format!("{delta:+.2}pp"))
-        .unwrap_or_else(|| "n/a".into())
-}
-
-fn line_ranges(lines: &[u32]) -> Vec<String> {
-    let Some((&first, rest)) = lines.split_first() else {
-        return Vec::new();
-    };
-    let mut ranges = Vec::new();
-    let mut start = first;
-    let mut end = first;
-    for &line in rest {
-        if line == end.saturating_add(1) {
-            end = line;
-        } else {
-            ranges.push(format_range(start, end));
-            start = line;
-            end = line;
-        }
-    }
-    ranges.push(format_range(start, end));
-    ranges
-}
-
-fn format_range(start: u32, end: u32) -> String {
-    if start == end {
-        start.to_string()
-    } else {
-        format!("{start}-{end}")
-    }
-}
-
-fn escape_path(path: &str) -> String {
-    let mut escaped = String::with_capacity(path.len());
-    for character in path.chars() {
-        if character == '\\' || character.is_control() {
-            escaped.extend(character.escape_default());
-        } else {
-            escaped.push(character);
-        }
-    }
-    escaped
+    render_comparison(&format!("PR: #{pr} @ {short_sha}"), &document.comparison)
 }
 
 #[cfg(test)]
 mod tests {
-    use badge_rs_core::compare::{Counts, DiffCoverage, FileDelta};
+    use badge_rs_core::compare::{Comparison, Counts, DiffCoverage, FileDelta};
 
     use super::*;
+    use crate::render::escape_path;
 
     const HEAD_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 
