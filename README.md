@@ -130,8 +130,9 @@ steps:
 `cli-version` defaults to `auto`: `@v1` selects the newest stable `v1.x.y`
 release containing binaries for the current runner, while an exact Action ref
 such as `@v1.2.3` selects only that release. Set an exact `cli-version` to use a
-released CLI from `main` or a commit SHA, or set it to `source` to force a local
-release build.
+released CLI from `main` or a commit SHA, set it to `latest` to track the newest
+stable prebuilt CLI independently of the Action ref, or set it to `source` to
+force a local release build.
 
 `markdown-summary` is opt-in. When enabled, Badgers adds a navigable coverage
 report to the GitHub Actions job summary. With GitHub repository storage

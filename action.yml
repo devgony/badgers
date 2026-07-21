@@ -10,7 +10,7 @@ inputs:
     description: >
       Badgers CLI release to install. 'auto' uses the release matching a
       versioned Action ref and falls back to a source build for main or SHAs;
-      use an exact vX.Y.Z tag or 'source' to override that behavior.
+      use 'latest', an exact vX.Y.Z tag, or 'source' to override that behavior.
     default: "auto"
   working-directory:
     description: Directory containing the Python project (repo-relative)

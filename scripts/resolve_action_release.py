@@ -37,6 +37,8 @@ def target_for(runner_os: str, runner_arch: str) -> str | None:
 def release_selector(cli_version: str, action_ref: str) -> tuple[str, str] | None:
     if cli_version == "source":
         return None
+    if cli_version == "latest":
+        return ("latest", "latest")
     if cli_version == "auto":
         if FULL_VERSION.fullmatch(action_ref):
             return ("exact", action_ref)
@@ -45,7 +47,9 @@ def release_selector(cli_version: str, action_ref: str) -> tuple[str, str] | Non
         return None
     if FULL_VERSION.fullmatch(cli_version):
         return ("exact", cli_version)
-    raise ValueError("cli-version must be 'auto', 'source', or an exact vX.Y.Z tag")
+    raise ValueError(
+        "cli-version must be 'auto', 'latest', 'source', or an exact vX.Y.Z tag"
+    )
 
 
 def has_target_assets(release: dict[str, Any], target: str) -> bool:
@@ -75,7 +79,7 @@ def select_release(
         if (
             release.get("prerelease")
             or match is None
-            or not tag.startswith(f"{requested}.")
+            or (mode == "major" and not tag.startswith(f"{requested}."))
             or not has_target_assets(release, target)
         ):
             continue
