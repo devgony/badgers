@@ -1,8 +1,9 @@
 [package]
-name = "badgers-storage"
+name = "badge-rs-storage"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Storage backends (GCS, local filesystem) for badgers coverage snapshots"
 
 [dependencies]

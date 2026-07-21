@@ -6,6 +6,10 @@ def sub(a, b):
     return a - b
 
 
+def multiply(a, b):
+    return a * b
+
+
 def classify(n):
     if n > 0:
         return "positive"

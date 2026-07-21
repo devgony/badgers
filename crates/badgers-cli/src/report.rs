@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use badgers_core::compare::{ChangedLines, Comparison, FileDelta, compare};
-use badgers_core::diff::parse_unified_diff;
-use badgers_core::{CoverageSnapshot, FileCoverage};
+use badge_rs_core::compare::{ChangedLines, Comparison, FileDelta, compare};
+use badge_rs_core::diff::parse_unified_diff;
+use badge_rs_core::{CoverageSnapshot, FileCoverage};
 use clap::Args;
 
 #[derive(Args, Debug)]
@@ -89,6 +89,22 @@ pub(crate) fn git_diff_output(repo_root: &Path, range: &str) -> Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+pub(crate) fn git_path_prefix(repo_root: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rev-parse", "--show-prefix"])
+        .output()
+        .context("failed to invoke git for repository path prefix")?;
+    if !output.status.success() {
+        bail!(
+            "`git rev-parse --show-prefix` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn write_report(
@@ -278,8 +294,8 @@ impl DirAgg {
         if !base_available {
             return None;
         }
-        let head = badgers_core::coverage_pct(self.head_covered, self.head_executable)?;
-        let base = badgers_core::coverage_pct(self.base_covered, self.base_executable)?;
+        let head = badge_rs_core::coverage_pct(self.head_covered, self.head_executable)?;
+        let base = badge_rs_core::coverage_pct(self.base_covered, self.base_executable)?;
         Some(head - base)
     }
 }
@@ -299,7 +315,7 @@ fn diff_cell(covered: u32, relevant: u32) -> String {
     if relevant > 0 {
         format!(
             "{covered}/{relevant} ({})",
-            fmt_pct(badgers_core::coverage_pct(
+            fmt_pct(badge_rs_core::coverage_pct(
                 u64::from(covered),
                 u64::from(relevant)
             ))
@@ -328,7 +344,7 @@ fn render_tree(node: &DirNode, depth: usize, comparison: &Comparison, out: &mut 
         let coverage = if agg.head_executable == 0 {
             "–".to_string()
         } else {
-            fmt_pct(badgers_core::coverage_pct(
+            fmt_pct(badge_rs_core::coverage_pct(
                 agg.head_covered,
                 agg.head_executable,
             ))

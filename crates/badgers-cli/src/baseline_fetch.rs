@@ -1,5 +1,5 @@
 use anyhow::Context;
-use badgers_storage::BranchPointer;
+use badge_rs_storage::BranchPointer;
 use clap::Args;
 
 use crate::storage_opts::StorageOpts;
@@ -25,6 +25,7 @@ pub struct BaselineFetchArgs {
 }
 
 pub fn run(args: &BaselineFetchArgs) -> anyhow::Result<()> {
+    validate_commit_sha(&args.merge_base).context("invalid merge-base commit SHA")?;
     let backend = args.storage.backend()?;
     let keys = args.storage.keys();
 
@@ -39,6 +40,8 @@ pub fn run(args: &BaselineFetchArgs) -> anyhow::Result<()> {
     if let Some(obj) = backend.get(&pointer_key)? {
         let pointer: BranchPointer =
             serde_json::from_slice(&obj.data).with_context(|| format!("parsing {pointer_key}"))?;
+        validate_commit_sha(&pointer.commit_sha)
+            .with_context(|| format!("invalid commit SHA in {pointer_key}"))?;
         let snapshot = backend.get(&pointer.snapshot_key)?.with_context(|| {
             format!(
                 "pointer {pointer_key} references missing object {}",
@@ -64,4 +67,32 @@ fn write_snapshot(output: &std::path::Path, compressed: &[u8]) -> anyhow::Result
 fn report(kind: &str, sha: &str) {
     println!("baseline-kind={kind}");
     println!("baseline-sha={sha}");
+}
+
+fn validate_commit_sha(sha: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        sha.len() == 40 && sha.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "commit SHA must be exactly 40 ASCII hexadecimal characters"
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validates_pointer_commit_sha_before_reporting() {
+        assert!(validate_commit_sha("0123456789abcdef0123456789abcdef01234567").is_ok());
+        for invalid in [
+            "abc1234",
+            "0123456789abcdef0123456789abcdef0123456g",
+            "0123456789abcdef0123456789abcdef012345\n",
+        ] {
+            assert!(
+                validate_commit_sha(invalid).is_err(),
+                "accepted {invalid:?}"
+            );
+        }
+    }
 }

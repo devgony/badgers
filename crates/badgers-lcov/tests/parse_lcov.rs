@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use badgers_core::{Language, LineHit};
-use badgers_lcov::{LcovError, ParseOptions, parse_lcov};
+use badge_rs_core::{Language, LineHit};
+use badge_rs_lcov::{LcovError, ParseOptions, parse_lcov};
 
 fn opts(root: &Path) -> ParseOptions<'_> {
     ParseOptions { repo_root: root }

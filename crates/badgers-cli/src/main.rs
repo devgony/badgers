@@ -3,8 +3,8 @@ use std::process::ExitCode;
 use clap::Parser;
 
 fn main() -> ExitCode {
-    let cli = badgers_cli::Cli::parse();
-    match badgers_cli::run(cli) {
+    let cli = badge_rs::Cli::parse();
+    match badge_rs::run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("error: {err:#}");

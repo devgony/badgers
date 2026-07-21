@@ -1,9 +1,9 @@
-name: badgers
-description: >
-  PR line coverage for Python projects: collects coverage.py results,
-  compares against the merge-base baseline (from GCS history when
-  configured, otherwise rebuilt in a worktree), and publishes an HTML
-  coverage-diff report (artifact always; GitHub Pages or GCS opt-in).
+name: Badgers PR Coverage
+description: PR line coverage reports for Python projects with diff annotations, comments, and durable history.
+author: devgony
+branding:
+  icon: activity
+  color: orange
 
 inputs:
   working-directory:
@@ -20,9 +20,9 @@ inputs:
     default: "false"
   gcs-bucket:
     description: >
-      GCS bucket for snapshot history (baselines without re-running tests)
-      and private PR report hosting. Requires google-github-actions/auth to
-      run first in the calling workflow. Empty disables GCS.
+      GCS bucket for snapshot history (baselines without re-running tests).
+      Requires google-github-actions/auth to run first in the calling
+      workflow. Empty disables GCS.
     default: ""
   gcs-prefix:
     description: Object key prefix inside the GCS bucket
@@ -32,6 +32,39 @@ inputs:
       Post/update a coverage summary comment on the PR (marker-based upsert).
       Requires `pull-requests: write`; posting failures only warn.
     default: "true"
+  check-annotations:
+    description: >
+      Publish warning annotations for uncovered changed executable lines.
+      Requires `checks: write`; publishing failures only warn.
+    default: "true"
+  markdown-summary:
+    description: >
+      Publish a navigable Markdown coverage report to the job summary and
+      upload the Markdown file as an artifact.
+    default: "false"
+  github-storage-repo:
+    description: >
+      GitHub repository used as durable report storage (owner/repo).
+      Empty disables repository storage.
+    default: ""
+  github-storage-branch:
+    description: Dedicated branch used in the storage repository
+    default: "badgers-coverage"
+  github-storage-prefix:
+    description: Path prefix inside the storage repository
+    default: "badgers"
+  github-storage-token:
+    description: >
+      Contents-write token for the storage repository. The default token only
+      works when github-storage-repo is the current repository; use a GitHub
+      App installation token or fine-grained PAT for another repository.
+    default: ${{ github.token }}
+  github-storage-retention:
+    description: >
+      Retention policy for commits/{sha} directories in the storage branch.
+      'latest' (default) prunes commits not referenced by any pointer after
+      each push. 'all' skips pruning and keeps full history.
+    default: "latest"
   pages-branch:
     description: Branch used for GitHub Pages deployment
     default: "gh-pages"
@@ -41,8 +74,11 @@ inputs:
 
 outputs:
   report-url:
-    description: URL of the deployed HTML report (Pages or GCS; empty when neither is enabled)
-    value: ${{ steps.pages.outputs.report-url || steps.gcs-report.outputs.report-url }}
+    description: URL of the deployed HTML report (empty unless pages=true)
+    value: ${{ steps.pages.outputs.report-url }}
+  durable-report-url:
+    description: URL of the durable Markdown PR report (empty for disabled storage, non-PR runs, and forks)
+    value: ${{ steps.report-navigation.outputs.durable-report-url }}
 
 runs:
   using: composite
@@ -55,30 +91,59 @@ runs:
 
     - name: Build badgers
       shell: bash
+      env:
+        BADGERS_ACTION_PATH: ${{ github.action_path }}
       run: |
-        cargo build --release --manifest-path "${{ github.action_path }}/Cargo.toml"
-        echo "${{ github.action_path }}/target/release" >> "$GITHUB_PATH"
+        cargo build --release --manifest-path "$BADGERS_ACTION_PATH/Cargo.toml"
+        echo "$BADGERS_ACTION_PATH/target/release" >> "$GITHUB_PATH"
+
+    - name: Compute PR report navigation URLs
+      id: report-navigation
+      if: github.event_name == 'pull_request'
+      shell: bash
+      env:
+        BADGERS_PR_NUMBER: ${{ github.event.pull_request.number }}
+        BADGERS_SOURCE_REPO: ${{ github.repository }}
+        BADGERS_PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        BADGERS_STORAGE_REPO: ${{ inputs.github-storage-repo }}
+        BADGERS_STORAGE_BRANCH: ${{ inputs.github-storage-branch }}
+        BADGERS_STORAGE_PREFIX: ${{ inputs.github-storage-prefix }}
+      run: |
+        set -euo pipefail
+        python3 "$GITHUB_ACTION_PATH/scripts/report_navigation.py"
 
     - name: Run tests under coverage (head)
       shell: bash
       working-directory: ${{ inputs.working-directory }}
-      run: ${{ inputs.coverage-command }}
+      env:
+        BADGERS_COVERAGE_COMMAND: ${{ inputs.coverage-command }}
+      run: |
+        set -euo pipefail
+        bash -c "$BADGERS_COVERAGE_COMMAND"
 
     - name: Collect head snapshot
       shell: bash
       working-directory: ${{ inputs.working-directory }}
+      env:
+        MARKDOWN_SUMMARY: ${{ inputs.markdown-summary }}
       run: |
         badgers collect python --repo-root . -o coverage-snapshot.json \
           | tee badgers-summary.txt
-        {
-          echo '### 🦡 Badgers Python Coverage'
-          echo '```'
-          cat badgers-summary.txt
-          echo '```'
-        } >> "$GITHUB_STEP_SUMMARY"
+        if [ "$MARKDOWN_SUMMARY" != "true" ]; then
+          {
+            echo '### 🦡 Badgers Python Coverage'
+            echo '```'
+            cat badgers-summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        fi
 
     - name: Issue GCS access token
-      if: inputs.gcs-bucket != ''
+      if: >-
+        inputs.gcs-bucket != '' &&
+        (github.event_name == 'push' ||
+         (github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository))
       shell: bash
       run: |
         set -euo pipefail
@@ -88,16 +153,24 @@ runs:
 
     - name: Fetch baseline snapshot from GCS
       id: gcs-baseline
-      if: github.event_name == 'pull_request' && inputs.gcs-bucket != ''
+      if: >-
+        github.event_name == 'pull_request' &&
+        inputs.gcs-bucket != '' &&
+        github.event.pull_request.head.repo.full_name == github.repository
       shell: bash
+      env:
+        BADGERS_BASE_REF: ${{ github.base_ref }}
+        BADGERS_GCS_BUCKET: ${{ inputs.gcs-bucket }}
+        BADGERS_GCS_PREFIX: ${{ inputs.gcs-prefix }}
       run: |
         set -euo pipefail
-        MERGE_BASE=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+        git check-ref-format --branch "$BADGERS_BASE_REF" >/dev/null
+        MERGE_BASE=$(git merge-base "origin/${BADGERS_BASE_REF}" HEAD)
         badgers baseline fetch \
           --merge-base "$MERGE_BASE" \
-          --base-ref "${{ github.base_ref }}" \
-          --bucket "${{ inputs.gcs-bucket }}" \
-          --prefix "${{ inputs.gcs-prefix }}" \
+          --base-ref "$BADGERS_BASE_REF" \
+          --bucket "$BADGERS_GCS_BUCKET" \
+          --prefix "$BADGERS_GCS_PREFIX" \
           --repo "$GITHUB_REPOSITORY" \
           -o /tmp/badgers-base-snapshot.json | tee -a "$GITHUB_OUTPUT"
 
@@ -107,14 +180,20 @@ runs:
         steps.gcs-baseline.outputs.baseline-kind != 'exact' &&
         steps.gcs-baseline.outputs.baseline-kind != 'approximate'
       shell: bash
+      env:
+        BADGERS_BASE_REF: ${{ github.base_ref }}
+        BADGERS_COVERAGE_COMMAND: ${{ inputs.coverage-command }}
+        BADGERS_WORKING_DIRECTORY: ${{ inputs.working-directory }}
       run: |
-        MERGE_BASE=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+        set -euo pipefail
+        git check-ref-format --branch "$BADGERS_BASE_REF" >/dev/null
+        MERGE_BASE=$(git merge-base "origin/${BADGERS_BASE_REF}" HEAD)
         echo "merge-base: $MERGE_BASE"
         git worktree add /tmp/badgers-base "$MERGE_BASE"
-        BASE_DIR="/tmp/badgers-base/${{ inputs.working-directory }}"
+        BASE_DIR="/tmp/badgers-base/$BADGERS_WORKING_DIRECTORY"
         if [ -d "$BASE_DIR" ]; then
           cd "$BASE_DIR"
-          ${{ inputs.coverage-command }}
+          bash -c "$BADGERS_COVERAGE_COMMAND"
           badgers collect python --repo-root . -o /tmp/badgers-base-snapshot.json
         else
           echo "::notice::working directory missing at merge-base; skipping baseline"
@@ -124,14 +203,18 @@ runs:
       if: github.event_name == 'pull_request'
       shell: bash
       working-directory: ${{ inputs.working-directory }}
+      env:
+        BADGERS_BASE_REF: ${{ github.base_ref }}
       run: |
+        set -euo pipefail
+        git check-ref-format --branch "$BADGERS_BASE_REF" >/dev/null
         BASE_ARGS=()
         if [ -f /tmp/badgers-base-snapshot.json ]; then
           BASE_ARGS=(--base /tmp/badgers-base-snapshot.json)
         fi
         badgers report html \
           --head coverage-snapshot.json "${BASE_ARGS[@]}" \
-          --git-diff "origin/${{ github.base_ref }}...HEAD" \
+          --git-diff "origin/${BADGERS_BASE_REF}...HEAD" \
           --repo-root . -o coverage-report
 
     - name: Generate HTML report (non-PR, head only)
@@ -141,6 +224,73 @@ runs:
       run: |
         badgers report html --head coverage-snapshot.json \
           --repo-root . -o coverage-report
+
+    - name: Generate Markdown coverage summary
+      if: inputs.markdown-summary == 'true' || inputs.github-storage-repo != ''
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        BADGERS_EVENT_NAME: ${{ github.event_name }}
+        BADGERS_BASE_REF: ${{ github.base_ref }}
+        BADGERS_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        BADGERS_STORAGE_REPO: ${{ inputs.github-storage-repo }}
+        BADGERS_MARKDOWN_SUMMARY: ${{ inputs.markdown-summary }}
+        BADGERS_FILES_CHANGED_URL: ${{ steps.report-navigation.outputs.files-changed-url }}
+      run: |
+        set -euo pipefail
+        BASE_ARGS=()
+        if [ -f /tmp/badgers-base-snapshot.json ]; then
+          BASE_ARGS=(--base /tmp/badgers-base-snapshot.json)
+        fi
+
+        DIFF_ARGS=()
+        if [ "$BADGERS_EVENT_NAME" = "pull_request" ]; then
+          git check-ref-format --branch "$BADGERS_BASE_REF" >/dev/null
+          DIFF_ARGS=(--git-diff "origin/${BADGERS_BASE_REF}...HEAD")
+        fi
+
+        if [[ ! "$BADGERS_SOURCE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+          echo "::error::invalid source commit SHA"
+          exit 1
+        fi
+        SOURCE_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/${BADGERS_SOURCE_SHA}"
+        SOURCE_PREFIX=$(git rev-parse --show-prefix)
+        if [ -n "$SOURCE_PREFIX" ]; then
+          ENCODED_PREFIX=$(python3 -c \
+            'import sys; from urllib.parse import quote; print(quote(sys.argv[1].rstrip("/"), safe="/"))' \
+            "$SOURCE_PREFIX")
+          SOURCE_URL="${SOURCE_URL}/${ENCODED_PREFIX}"
+        fi
+
+        REPORT_PATH="$RUNNER_TEMP/badgers-coverage-summary.md"
+        COMPARISON_ARGS=()
+        if [ -n "$BADGERS_STORAGE_REPO" ]; then
+          COMPARISON_ARGS=(--comparison-output "$RUNNER_TEMP/badgers-comparison.json")
+        fi
+        NAVIGATION_ARGS=()
+        if [ -n "$BADGERS_FILES_CHANGED_URL" ]; then
+          NAVIGATION_ARGS=(--files-changed-url "$BADGERS_FILES_CHANGED_URL")
+        fi
+        rm -f -- "$REPORT_PATH"
+        badgers report markdown \
+          --head coverage-snapshot.json "${BASE_ARGS[@]}" "${DIFF_ARGS[@]}" \
+          --repo-root . --source-url "$SOURCE_URL" \
+          "${COMPARISON_ARGS[@]}" "${NAVIGATION_ARGS[@]}" \
+          --output "$REPORT_PATH"
+
+        if [ "$BADGERS_MARKDOWN_SUMMARY" = "true" ]; then
+          SIZE=$(wc -c < "$REPORT_PATH")
+          if [ "$SIZE" -le 1000000 ]; then
+            cat "$REPORT_PATH" >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo '## 🦡 Badgers Coverage Report'
+              echo
+              echo "The full Markdown report is ${SIZE} bytes, so it is available in the coverage-markdown artifact instead of the 1 MiB-limited job summary."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::Markdown report exceeds the job summary size limit; use the coverage-markdown artifact"
+          fi
+        fi
 
     - uses: actions/upload-artifact@v4
       with:
@@ -152,18 +302,43 @@ runs:
         name: coverage-report
         path: ${{ inputs.working-directory }}/coverage-report/
 
+    - name: Upload Markdown coverage report
+      if: inputs.markdown-summary == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-markdown
+        path: ${{ runner.temp }}/badgers-coverage-summary.md
+
     - name: Push snapshot to GCS
-      if: inputs.gcs-bucket != ''
+      if: >-
+        inputs.gcs-bucket != '' &&
+        (github.event_name == 'push' ||
+         (github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository))
       shell: bash
       working-directory: ${{ inputs.working-directory }}
+      env:
+        BADGERS_EVENT_NAME: ${{ github.event_name }}
+        BADGERS_PR_NUMBER: ${{ github.event.pull_request.number }}
+        BADGERS_GCS_BUCKET: ${{ inputs.gcs-bucket }}
+        BADGERS_GCS_PREFIX: ${{ inputs.gcs-prefix }}
       run: |
         set -euo pipefail
         SHA=$(git rev-parse HEAD)
+        if [[ ! "$SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+          echo "::error::invalid commit SHA"
+          exit 1
+        fi
         COMMITTED_AT=$(git show -s --format=%cI HEAD)
         REF_ARGS=()
-        if [ "${{ github.event_name }}" = "pull_request" ]; then
-          REF_ARGS=(--pr "${{ github.event.pull_request.number }}")
+        if [ "$BADGERS_EVENT_NAME" = "pull_request" ]; then
+          if [[ ! "$BADGERS_PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "::error::invalid pull request number"
+            exit 1
+          fi
+          REF_ARGS=(--pr "$BADGERS_PR_NUMBER")
         else
+          git check-ref-format --branch "$GITHUB_REF_NAME" >/dev/null
           REF_ARGS=(--branch "$GITHUB_REF_NAME")
         fi
         badgers snapshot push \
@@ -171,47 +346,189 @@ runs:
           --sha "$SHA" \
           --committed-at "$COMMITTED_AT" \
           "${REF_ARGS[@]}" \
-          --bucket "${{ inputs.gcs-bucket }}" \
-          --prefix "${{ inputs.gcs-prefix }}" \
+          --bucket "$BADGERS_GCS_BUCKET" \
+          --prefix "$BADGERS_GCS_PREFIX" \
           --repo "$GITHUB_REPOSITORY"
 
-    - name: Upload HTML report to GCS
-      id: gcs-report
-      if: github.event_name == 'pull_request' && inputs.gcs-bucket != ''
+    - name: Push report to GitHub repository storage
+      if: >-
+        inputs.github-storage-repo != '' &&
+        (github.event_name == 'push' ||
+         (github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository))
       shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        BADGERS_EVENT_NAME: ${{ github.event_name }}
+        BADGERS_PR_NUMBER: ${{ github.event.pull_request.number }}
+        BADGERS_SOURCE_REPO: ${{ github.repository }}
+        BADGERS_STORAGE_REPO: ${{ inputs.github-storage-repo }}
+        BADGERS_STORAGE_BRANCH: ${{ inputs.github-storage-branch }}
+        BADGERS_STORAGE_PREFIX: ${{ inputs.github-storage-prefix }}
+        BADGERS_STORAGE_TOKEN: ${{ inputs.github-storage-token }}
+        BADGERS_STORAGE_RETENTION: ${{ inputs.github-storage-retention }}
       run: |
         set -euo pipefail
-        BASE="${{ inputs.gcs-prefix }}/repos/${GITHUB_REPOSITORY}/prs/${{ github.event.pull_request.number }}/report"
-        gcloud storage rsync --recursive --delete-unmatched-destination-objects \
-          "$GITHUB_WORKSPACE/${{ inputs.working-directory }}/coverage-report" \
-          "gs://${{ inputs.gcs-bucket }}/$BASE"
-        REPORT_URL="https://storage.cloud.google.com/${{ inputs.gcs-bucket }}/$BASE/index.html"
-        echo "report-url=$REPORT_URL" >> "$GITHUB_OUTPUT"
-        {
-          echo ''
-          echo "**HTML report**: $REPORT_URL"
-        } >> "$GITHUB_STEP_SUMMARY"
-        echo "uploaded: $REPORT_URL"
+        if [[ ! "$BADGERS_STORAGE_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+          echo "::error::github-storage-repo must be owner/repo"
+          exit 1
+        fi
+        if [[ "$BADGERS_STORAGE_REPO" == ./* || "$BADGERS_STORAGE_REPO" == */. ||
+              "$BADGERS_STORAGE_REPO" == ../* || "$BADGERS_STORAGE_REPO" == */.. ]]; then
+          echo "::error::github-storage-repo contains an invalid owner or repository"
+          exit 1
+        fi
+        if [[ "$BADGERS_STORAGE_BRANCH" == refs/* || "$BADGERS_STORAGE_BRANCH" == @\{-* ]]; then
+          echo "::error::github-storage-branch must be an unqualified branch name"
+          exit 1
+        fi
+        git check-ref-format "refs/heads/$BADGERS_STORAGE_BRANCH" >/dev/null
+        if [ -z "$BADGERS_STORAGE_TOKEN" ]; then
+          echo "::error::github-storage-token is required"
+          exit 1
+        fi
+        python3 -c \
+          'import sys; p=sys.argv[1]; parts=p.strip("/").split("/") if p.strip("/") else []; bad="\\" in p or any(x in ("", ".", "..") for x in parts); sys.exit("unsafe storage prefix") if bad else None' \
+          "$BADGERS_STORAGE_PREFIX"
+        if [ "$BADGERS_STORAGE_RETENTION" != "latest" ] && [ "$BADGERS_STORAGE_RETENTION" != "all" ]; then
+          echo "::error::github-storage-retention must be 'latest' or 'all'"
+          exit 1
+        fi
+
+        echo "::add-mask::$BADGERS_STORAGE_TOKEN"
+        AUTH_HEADER=$(printf 'x-access-token:%s' "$BADGERS_STORAGE_TOKEN" | base64 | tr -d '\n')
+        echo "::add-mask::$AUTH_HEADER"
+        REMOTE="${GITHUB_SERVER_URL}/${BADGERS_STORAGE_REPO}.git"
+        SNAPSHOT="$PWD/coverage-snapshot.json"
+        REPORT="$RUNNER_TEMP/badgers-coverage-summary.md"
+        COMPARISON="$RUNNER_TEMP/badgers-comparison.json"
+        HTML_REPORT_DIR="$PWD/coverage-report"
+        SHA=$(git rev-parse HEAD)
+        if [[ ! "$SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+          echo "::error::invalid commit SHA"
+          exit 1
+        fi
+        COMMITTED_AT=$(git show -s --format=%cI HEAD)
+        REF_ARGS=()
+        if [ "$BADGERS_EVENT_NAME" = "pull_request" ]; then
+          if [[ ! "$BADGERS_PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "::error::invalid pull request number"
+            exit 1
+          fi
+          REF_ARGS=(--pr "$BADGERS_PR_NUMBER")
+        else
+          git check-ref-format --branch "$GITHUB_REF_NAME" >/dev/null
+          REF_ARGS=(--branch "$GITHUB_REF_NAME")
+        fi
+
+        for attempt in 1 2 3 4 5; do
+          STORE=$(mktemp -d)
+          CLONED_SHA=""
+          if git -c "http.extraheader=AUTHORIZATION: basic $AUTH_HEADER" \
+              clone --depth 1 --branch "$BADGERS_STORAGE_BRANCH" \
+              "$REMOTE" "$STORE" 2>/dev/null; then
+            CLONED_SHA=$(git -C "$STORE" rev-parse HEAD)
+            # Discard history only: the orphan checkout keeps the working
+            # tree and index, so other PRs' and branches' stored reports
+            # survive into the single new parentless commit.
+            git -C "$STORE" checkout -q --orphan badgers-orphan
+          else
+            rm -rf "$STORE"
+            mkdir "$STORE"
+            git -C "$STORE" init -q -b "$BADGERS_STORAGE_BRANCH"
+            git -C "$STORE" remote add origin "$REMOTE"
+          fi
+
+          HTML_REPORT_ARGS=()
+          if [ -d "$HTML_REPORT_DIR" ]; then
+            HTML_REPORT_ARGS=(--html-report "$HTML_REPORT_DIR")
+          fi
+
+          badgers snapshot push \
+            --snapshot "$SNAPSHOT" \
+            --comparison "$COMPARISON" \
+            --report "$REPORT" \
+            --sha "$SHA" \
+            --committed-at "$COMMITTED_AT" \
+            "${REF_ARGS[@]}" \
+            "${HTML_REPORT_ARGS[@]}" \
+            --local-dir "$STORE" \
+            --prefix "$BADGERS_STORAGE_PREFIX" \
+            --repo "$BADGERS_SOURCE_REPO"
+
+          if [ "$BADGERS_STORAGE_RETENTION" = "latest" ]; then
+            python3 "$GITHUB_ACTION_PATH/scripts/storage_retention.py" \
+              "$STORE" "$BADGERS_STORAGE_PREFIX"
+          fi
+
+          git -C "$STORE" config user.name "github-actions[bot]"
+          git -C "$STORE" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$STORE" add -A
+          if [ -n "$CLONED_SHA" ] &&
+              [ "$(git -C "$STORE" write-tree)" = \
+                "$(git -C "$STORE" rev-parse "${CLONED_SHA}^{tree}")" ]; then
+            echo "repository storage already up to date"
+            exit 0
+          fi
+          git -C "$STORE" commit -q -m "coverage: ${BADGERS_SOURCE_REPO} @ ${SHA:0:7}"
+
+          PUSH_ARGS=()
+          if [ -n "$CLONED_SHA" ]; then
+            PUSH_ARGS=("--force-with-lease=refs/heads/$BADGERS_STORAGE_BRANCH:$CLONED_SHA")
+          fi
+          if git -C "$STORE" \
+              -c "http.extraheader=AUTHORIZATION: basic $AUTH_HEADER" \
+              push "${PUSH_ARGS[@]}" origin "HEAD:refs/heads/$BADGERS_STORAGE_BRANCH"; then
+            echo "stored coverage in ${BADGERS_STORAGE_REPO}@${BADGERS_STORAGE_BRANCH}"
+            exit 0
+          fi
+          rm -rf "$STORE"
+          sleep $((attempt * 2))
+        done
+        echo "::error::failed to push repository storage after 5 attempts"
+        exit 1
 
     - name: Deploy report to GitHub Pages branch
       id: pages
-      if: inputs.pages == 'true'
+      if: >-
+        inputs.pages == 'true' &&
+        (github.event_name == 'push' ||
+         (github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository))
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
+        BADGERS_EVENT_NAME: ${{ github.event_name }}
+        BADGERS_PR_NUMBER: ${{ github.event.pull_request.number }}
+        BADGERS_PAGES_BRANCH: ${{ inputs.pages-branch }}
+        BADGERS_WORKING_DIRECTORY: ${{ inputs.working-directory }}
       run: |
         set -euo pipefail
-        REPORT_SRC="$GITHUB_WORKSPACE/${{ inputs.working-directory }}/coverage-report"
-        PAGES_BRANCH="${{ inputs.pages-branch }}"
-        if [ "${{ github.event_name }}" = "pull_request" ]; then
-          DEST="pr-${{ github.event.pull_request.number }}"
+        REPORT_SRC="$GITHUB_WORKSPACE/$BADGERS_WORKING_DIRECTORY/coverage-report"
+        PAGES_BRANCH="$BADGERS_PAGES_BRANCH"
+        git check-ref-format --branch "$PAGES_BRANCH" >/dev/null
+        if [[ ! "$GITHUB_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+          echo "::error::invalid commit SHA"
+          exit 1
+        fi
+        if [ "$BADGERS_EVENT_NAME" = "pull_request" ]; then
+          if [[ ! "$BADGERS_PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "::error::invalid pull request number"
+            exit 1
+          fi
+          DEST="pr-${BADGERS_PR_NUMBER}"
         else
+          git check-ref-format --branch "$GITHUB_REF_NAME" >/dev/null
           DEST="branch-$(echo "${GITHUB_REF_NAME}" | tr '/' '-')"
         fi
 
         SITE=$(mktemp -d)
-        REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-        if git clone --depth 1 --branch "$PAGES_BRANCH" "$REMOTE" "$SITE" 2>/dev/null; then
+        echo "::add-mask::$GH_TOKEN"
+        AUTH_HEADER=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+        echo "::add-mask::$AUTH_HEADER"
+        REMOTE="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+        if git -c "http.extraheader=AUTHORIZATION: basic $AUTH_HEADER" \
+            clone --depth 1 --branch "$PAGES_BRANCH" "$REMOTE" "$SITE" 2>/dev/null; then
           cd "$SITE"
         else
           cd "$SITE"
@@ -229,11 +546,13 @@ runs:
         git commit -q -m "coverage report: $DEST @ ${GITHUB_SHA::7}" || {
           echo "no changes to deploy"; }
         for attempt in 1 2 3; do
-          if git push origin "$PAGES_BRANCH"; then
+          if git -c "http.extraheader=AUTHORIZATION: basic $AUTH_HEADER" \
+              push origin "$PAGES_BRANCH"; then
             break
           fi
           echo "push failed (attempt $attempt), rebasing..."
-          git pull --rebase origin "$PAGES_BRANCH"
+          git -c "http.extraheader=AUTHORIZATION: basic $AUTH_HEADER" \
+            pull --rebase origin "$PAGES_BRANCH"
         done
 
         gh api "repos/${GITHUB_REPOSITORY}/pages" \
@@ -244,7 +563,10 @@ runs:
         OWNER="${GITHUB_REPOSITORY%%/*}"
         REPO="${GITHUB_REPOSITORY##*/}"
         URL=$(gh api "repos/${GITHUB_REPOSITORY}/pages" --jq .html_url 2>/dev/null \
-          || echo "https://${OWNER}.github.io/${REPO}/")
+          | head -n1 | tr -d '\r' || true)
+        if [[ ! "$URL" =~ ^https://[A-Za-z0-9.-]+(/[^[:space:]]*)?$ ]]; then
+          URL="https://${OWNER}.github.io/${REPO}/"
+        fi
         REPORT_URL="${URL%/}/${DEST}/"
         echo "report-url=$REPORT_URL" >> "$GITHUB_OUTPUT"
         {
@@ -253,46 +575,96 @@ runs:
         } >> "$GITHUB_STEP_SUMMARY"
         echo "deployed: $REPORT_URL"
 
-    - name: Post coverage comment on PR
+    - name: Publish coverage on PR
       if: >-
         github.event_name == 'pull_request' &&
-        inputs.pr-comment == 'true' &&
+        (inputs.pr-comment == 'true' || inputs.check-annotations == 'true') &&
         github.event.pull_request.head.repo.full_name == github.repository
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
         GITHUB_TOKEN: ${{ inputs.github-token }}
+        BADGERS_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        BADGERS_PR_COMMENT: ${{ inputs.pr-comment }}
+        BADGERS_CHECK_ANNOTATIONS: ${{ inputs.check-annotations }}
+        BADGERS_FILES_CHANGED_URL: ${{ steps.report-navigation.outputs.files-changed-url }}
+        BADGERS_MARKDOWN_REPORT_URL: ${{ steps.report-navigation.outputs.durable-report-url }}
+        BADGERS_BASELINE_KIND: ${{ steps.gcs-baseline.outputs.baseline-kind }}
+        BADGERS_BASELINE_SHA: ${{ steps.gcs-baseline.outputs.baseline-sha }}
+        BADGERS_BASE_REF: ${{ github.base_ref }}
+        BADGERS_HTML_REPORT_URL: ${{ steps.pages.outputs.report-url }}
+        BADGERS_PR_NUMBER: ${{ github.event.pull_request.number }}
+        BADGERS_STORAGE_REPO: ${{ inputs.github-storage-repo }}
+        BADGERS_STORAGE_BRANCH: ${{ inputs.github-storage-branch }}
+        BADGERS_STORAGE_PREFIX: ${{ inputs.github-storage-prefix }}
       run: |
         set -euo pipefail
+        if [[ ! "$BADGERS_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+          echo "::error::invalid pull request head SHA"
+          exit 1
+        fi
+        if [[ ! "$BADGERS_PR_NUMBER" =~ ^[0-9]+$ ]]; then
+          echo "::error::invalid pull request number"
+          exit 1
+        fi
         BASE_ARGS=()
         if [ -f /tmp/badgers-base-snapshot.json ]; then
           BASE_ARGS=(--base /tmp/badgers-base-snapshot.json)
         fi
 
-        KIND="${{ steps.gcs-baseline.outputs.baseline-kind }}"
-        SHA="${{ steps.gcs-baseline.outputs.baseline-sha }}"
+        git check-ref-format --branch "$BADGERS_BASE_REF" >/dev/null
+        KIND="$BADGERS_BASELINE_KIND"
+        SHA="$BADGERS_BASELINE_SHA"
         if { [ -z "$KIND" ] || [ "$KIND" = "none" ]; } \
             && [ -f /tmp/badgers-base-snapshot.json ]; then
           KIND="merge-base rebuild"
-          SHA=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+          SHA=$(git merge-base "origin/${BADGERS_BASE_REF}" HEAD)
         fi
         LABEL_ARGS=()
         if [ -n "$KIND" ] && [ "$KIND" != "none" ]; then
+          if [[ ! "$SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::invalid baseline commit SHA"
+            exit 1
+          fi
           LABEL_ARGS=(--baseline-label "\`${SHA:0:7}\` ($KIND)")
         fi
 
         URL_ARGS=()
-        REPORT_URL="${{ steps.pages.outputs.report-url || steps.gcs-report.outputs.report-url }}"
+        REPORT_URL="$BADGERS_HTML_REPORT_URL"
         if [ -n "$REPORT_URL" ]; then
           URL_ARGS=(--report-url "$REPORT_URL")
+        fi
+        if [ -n "$BADGERS_MARKDOWN_REPORT_URL" ]; then
+          URL_ARGS+=(--markdown-report-url "$BADGERS_MARKDOWN_REPORT_URL")
+        fi
+        if [ -n "$BADGERS_FILES_CHANGED_URL" ]; then
+          URL_ARGS+=(--files-changed-url "$BADGERS_FILES_CHANGED_URL")
+        fi
+
+        STORAGE_ARGS=()
+        if [ -n "$BADGERS_STORAGE_REPO" ]; then
+          STORAGE_ARGS=(
+            --storage-repo "$BADGERS_STORAGE_REPO"
+            --storage-branch "$BADGERS_STORAGE_BRANCH"
+            --storage-prefix "$BADGERS_STORAGE_PREFIX"
+          )
+        fi
+
+        PUBLISH_ARGS=()
+        if [ "$BADGERS_PR_COMMENT" != "true" ]; then
+          PUBLISH_ARGS+=(--skip-comment)
+        fi
+        if [ "$BADGERS_CHECK_ANNOTATIONS" = "true" ]; then
+          PUBLISH_ARGS+=(--check-annotations)
         fi
 
         badgers report github \
           --head coverage-snapshot.json "${BASE_ARGS[@]}" \
-          --git-diff "origin/${{ github.base_ref }}...HEAD" \
+          --git-diff "origin/${BADGERS_BASE_REF}...HEAD" \
           --repo-root . \
           --repo "$GITHUB_REPOSITORY" \
-          --pr "${{ github.event.pull_request.number }}" \
-          --head-sha "$(git rev-parse HEAD)" \
-          "${LABEL_ARGS[@]}" "${URL_ARGS[@]}" \
+          --pr "$BADGERS_PR_NUMBER" \
+          --head-sha "$BADGERS_HEAD_SHA" \
+          "${LABEL_ARGS[@]}" "${URL_ARGS[@]}" "${STORAGE_ARGS[@]}" \
+          "${PUBLISH_ARGS[@]}" \
           --soft-fail

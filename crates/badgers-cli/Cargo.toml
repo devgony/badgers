@@ -1,9 +1,11 @@
 [package]
-name = "badgers-cli"
-version.workspace = true
+name = "badge-rs"
+version = "0.1.1"
 edition.workspace = true
 license.workspace = true
-description = "badgers command line interface"
+repository.workspace = true
+description = "badgers: PR line coverage checker for Python and Rust projects"
+readme = "../../README.md"
 
 [[bin]]
 name = "badgers"
@@ -11,16 +13,17 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
-badgers-core = { workspace = true }
-badgers-lcov = { workspace = true }
-badgers-github = { workspace = true }
-badgers-storage = { workspace = true }
+badge-rs-core = { workspace = true }
+badge-rs-lcov = { workspace = true }
+badge-rs-github = { workspace = true }
+badge-rs-storage = { workspace = true }
 clap = { workspace = true }
 jiff = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+tempfile = "3.27.0"
 zstd = "0.13"
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
-tempfile = "3.27.0"

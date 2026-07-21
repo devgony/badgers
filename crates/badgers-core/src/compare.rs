@@ -1,6 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::{Deserialize, Serialize};
+
 use crate::{CoverageSnapshot, FileCoverage, coverage_pct};
+
+pub const COMPARISON_SCHEMA_VERSION: u32 = 1;
 
 /// Changed (added/modified) line numbers per repo-relative path, as produced
 /// by parsing a unified git diff of base...head.
@@ -13,7 +17,7 @@ impl ChangedLines {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Counts {
     pub covered: u64,
     pub executable: u64,
@@ -34,7 +38,7 @@ impl Counts {
 
 /// Diff coverage for one file: changed executable lines and how many of
 /// them are covered.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiffCoverage {
     pub relevant: u32,
     pub covered: u32,
@@ -47,7 +51,7 @@ impl DiffCoverage {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileDelta {
     pub path: String,
     /// `None` when the file does not exist in the base snapshot (new file).
@@ -64,10 +68,18 @@ impl FileDelta {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Comparison {
     pub base_available: bool,
     pub files: Vec<FileDelta>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComparisonDocument {
+    pub schema_version: u32,
+    pub head_sha: String,
+    pub base_sha: Option<String>,
+    pub comparison: Comparison,
 }
 
 impl Comparison {
@@ -275,5 +287,18 @@ mod tests {
         assert!(!comparison.base_available);
         assert_eq!(comparison.delta_pct(), None);
         assert_eq!(comparison.head_totals().pct().unwrap(), 100.0);
+    }
+
+    #[test]
+    fn comparison_document_round_trips() {
+        let document = ComparisonDocument {
+            schema_version: COMPARISON_SCHEMA_VERSION,
+            head_sha: "abc123".into(),
+            base_sha: Some("base123".into()),
+            comparison: compare(None, &snapshot(vec![]), &ChangedLines::default()),
+        };
+        let json = serde_json::to_vec_pretty(&document).unwrap();
+        let decoded: ComparisonDocument = serde_json::from_slice(&json).unwrap();
+        assert_eq!(decoded, document);
     }
 }
