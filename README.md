@@ -213,6 +213,26 @@ different or private repository, pass a GitHub App installation token or a
 fine-grained PAT with Contents write access. Repository writes are skipped for
 pull requests from forks.
 
+## Development
+
+Install the CLI from the current checkout with:
+
+```bash
+make install
+```
+
+Create a release from a clean, pushed `main` branch with:
+
+```bash
+make release VERSION=1.2.3
+```
+
+The release target checks formatting, runs the workspace tests and Clippy,
+publishes the GitHub Release that triggers binary packaging, and advances the
+stable major tag for non-prerelease versions. Versions containing a prerelease
+suffix such as `1.2.3-rc.1` are marked as prereleases and do not move the major
+tag.
+
 ## Status
 
 Badgers implements PR line coverage, coverage delta, diff coverage, GitHub PR
