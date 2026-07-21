@@ -49,6 +49,22 @@ The output is a compact, deterministic list of uncovered changed executable
 lines. It also includes total and changed-line coverage summaries; complete
 human-oriented reports remain available through Markdown and `badgers view`.
 
+While filling coverage gaps, agents iterate locally without waiting for CI:
+
+```bash
+badgers cov
+```
+
+The `cov` command runs coverage in the working tree (`cargo llvm-cov` for
+Rust, `coverage.py` for Python, or a prebuilt file via `--lcov-file`), diffs
+the working tree against the pull request base, and prints the same compact
+format as `badgers diff`. It exits with code 1 while uncovered changed
+executable lines remain, so the loop is: read the stored diff once, add
+tests, re-run `badgers cov` until it exits 0, then push. Pass `--no-fail`
+for report-only mode and `--baseline <snapshot.json>` to include the total
+coverage delta. The bundled `skills/coverage-backfill` skill packages this
+workflow for coding agents.
+
 Both commands infer the source repository from the checkout's local `origin`.
 The `view` command follows `prs/547/latest.json`, caches the referenced HTML
 bundle, and opens its self-contained `index.html`. Same-repository storage is
@@ -137,6 +153,12 @@ release build.
 report to the GitHub Actions job summary. With GitHub repository storage
 enabled, the complete Markdown report is also stored as `README.md` alongside
 the snapshot and HTML bundle.
+
+`fail-on-uncovered` defaults to `false`. When enabled, the action fails after
+all reports, comments, and snapshots are published if the pull request still
+contains uncovered changed executable lines. Combined with branch protection,
+this blocks merging until the coverage gap is closed; agents then backfill
+tests locally with `badgers cov` until the gate passes.
 
 `check-annotations` defaults to `true`. With `checks: write`, Badgers creates a
 `Badgers diff coverage` check and places warnings for uncovered changed
