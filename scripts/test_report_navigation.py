@@ -135,6 +135,9 @@ class ReportNavigationTests(unittest.TestCase):
         self.assertIn("github-storage-retention", action)
         self.assertIn("BADGERS_STORAGE_RETENTION", action)
         self.assertIn("--html-report", action)
+        self.assertIn('--storage-repo "$BADGERS_STORAGE_REPO"', action)
+        self.assertIn('--storage-branch "$BADGERS_STORAGE_BRANCH"', action)
+        self.assertIn('--storage-prefix "$BADGERS_STORAGE_PREFIX"', action)
         self.assertIn('"$BADGERS_STORAGE_RETENTION" != "latest"', action)
         # The orphan checkout must preserve the previous storage tree so
         # other PRs'/branches' reports survive the single-commit rewrite.

@@ -1,4 +1,5 @@
 mod baseline_fetch;
+mod github_storage;
 mod python;
 mod report;
 mod report_github;
@@ -7,6 +8,7 @@ mod setup_gcs;
 mod snapshot_push;
 mod storage_opts;
 mod summary;
+mod view;
 
 use clap::{Parser, Subcommand};
 
@@ -33,6 +35,8 @@ pub enum Command {
     Baseline(BaselineCommand),
     #[command(subcommand)]
     Setup(SetupCommand),
+    /// Download and open the latest stored HTML report for a pull request
+    View(view::ViewArgs),
 }
 
 #[derive(Subcommand)]
@@ -71,5 +75,6 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Snapshot(SnapshotCommand::Push(args)) => snapshot_push::run(&args),
         Command::Baseline(BaselineCommand::Fetch(args)) => baseline_fetch::run(&args),
         Command::Setup(SetupCommand::Gcs(args)) => setup_gcs::run(&args),
+        Command::View(args) => view::run(&args),
     }
 }
