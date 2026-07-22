@@ -315,7 +315,7 @@ dependencies = [
 
 [[package]]
 name = "badge-rs-core"
-version = "0.1.0"
+version = "1.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -323,7 +323,7 @@ dependencies = [
 
 [[package]]
 name = "badge-rs-github"
-version = "0.1.0"
+version = "1.2.0"
 dependencies = [
  "httpmock",
  "reqwest",
@@ -334,7 +334,7 @@ dependencies = [
 
 [[package]]
 name = "badge-rs-lcov"
-version = "0.1.0"
+version = "1.2.0"
 dependencies = [
  "badge-rs-core",
  "thiserror 2.0.19",
@@ -342,7 +342,7 @@ dependencies = [
 
 [[package]]
 name = "badge-rs-storage"
-version = "0.1.0"
+version = "1.2.0"
 dependencies = [
  "httpmock",
  "jiff",
