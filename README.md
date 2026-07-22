@@ -62,7 +62,7 @@ format as `badgers diff`. It exits with code 1 while uncovered changed
 executable lines remain, so the loop is: read the stored diff once, add
 tests, re-run `badgers cov` until it exits 0, then push. Pass `--no-fail`
 for report-only mode and `--baseline <snapshot.json>` to include the total
-coverage delta. The bundled `skills/coverage-backfill` skill packages this
+coverage delta. The bundled `skills/fill-coverage` skill packages this
 workflow for coding agents.
 
 Both commands infer the source repository from the checkout's local `origin`.

@@ -1,9 +1,9 @@
 ---
-name: coverage-backfill
-description: Backfill missing tests until the Badgers coverage gate passes. Use when a pull request's "Badgers diff coverage" check failed, when asked to "fill coverage", "fix coverage diff", or "add tests for uncovered lines". Iterates locally with `badgers cov` until no uncovered changed executable lines remain, then pushes and confirms CI.
+name: fill-coverage
+description: Fill in missing tests until the Badgers coverage gate passes. Use when a pull request's "Badgers diff coverage" check failed, when asked to "fill coverage", "fix coverage diff", or "add tests for uncovered lines". Iterates locally with `badgers cov` until no uncovered changed executable lines remain, then pushes and confirms CI.
 ---
 
-# Coverage Backfill
+# Fill Coverage
 
 Close the coverage gap on the current pull request by writing tests for
 exactly the changed lines that CI reported as uncovered.
