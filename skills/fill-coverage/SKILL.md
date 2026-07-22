@@ -10,10 +10,39 @@ exactly the changed lines that CI reported as uncovered.
 
 ## Prerequisites
 
-- `badgers` CLI installed (`~/.local/bin/badgers` or `cargo install badge-rs`)
+- `badgers` CLI installed **and recent enough to provide `badgers cov`** —
+  verify and install/upgrade with the steps in "Verify `badgers cov` first" below
 - GitHub CLI (`gh`) authenticated, current branch has an open pull request
 - Rust projects: `cargo llvm-cov` installed (`cargo install cargo-llvm-cov`)
 - Python projects: tests already run under `coverage run` before converting
+
+## Verify `badgers cov` first
+
+`badgers cov` is the only local loop condition for this skill. Before anything
+else, confirm the installed CLI actually provides it:
+
+```bash
+badgers cov --help >/dev/null 2>&1 && echo "cov ok" || echo "cov missing"
+```
+
+If it prints `cov missing`, the CLI is either absent
+(`command not found: badgers`) or too old
+(`error: unrecognized subcommand 'cov'`). Install or upgrade it — do NOT hunt
+for a different subcommand, there is no substitute for `cov`.
+
+```bash
+# Prebuilt binary, no Rust toolchain (installs to ~/.local/bin/badgers — put it on PATH)
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/devgony/badgers/releases/latest/download/badgers-installer.sh | sh
+
+# Or from crates.io (requires Rust)
+cargo install --force badge-rs
+
+# Or from a badgers checkout when a freshly installed release still lacks `cov`
+make install   # cargo install --locked --force --path crates/badgers-cli
+```
+
+Re-run the check and confirm it prints `cov ok` before continuing.
 
 ## Workflow
 
