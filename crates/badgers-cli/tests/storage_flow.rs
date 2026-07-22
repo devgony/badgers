@@ -1,4 +1,5 @@
 use assert_cmd::Command;
+use badge_rs_storage::{BranchPointer, Keys, POINTER_SCHEMA_VERSION};
 use predicates::prelude::*;
 
 fn badgers() -> Command {
@@ -42,6 +43,50 @@ fn push(store: &std::path::Path, snapshot: &std::path::Path, sha: &str, committe
         .args(["--repo", "owner/repo"])
         .assert()
         .success();
+}
+
+fn write_store_object(store: &std::path::Path, key: &str, data: &[u8]) {
+    let path = store.join(key);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, data).unwrap();
+}
+
+fn branch_pointer(sha: &str, snapshot_key: String) -> BranchPointer {
+    BranchPointer {
+        schema_version: POINTER_SCHEMA_VERSION,
+        branch: "main".to_string(),
+        commit_sha: sha.to_string(),
+        committed_at: "2026-07-19T00:00:00Z".to_string(),
+        snapshot_key,
+        comparison_key: None,
+        report_key: None,
+        html_prefix: None,
+        updated_at: "2026-07-19T00:01:00Z".to_string(),
+    }
+}
+
+fn write_branch_pointer(store: &std::path::Path, pointer: &BranchPointer) {
+    let key = Keys::new("badgers", "owner/repo").branch_pointer("main");
+    write_store_object(store, &key, &serde_json::to_vec(pointer).unwrap());
+}
+
+fn fetch_baseline(store: &std::path::Path, merge_base: &str, output: &std::path::Path) -> Command {
+    let mut command = badgers();
+    command
+        .args([
+            "baseline",
+            "fetch",
+            "--merge-base",
+            merge_base,
+            "--base-ref",
+            "main",
+        ])
+        .arg("-o")
+        .arg(output)
+        .arg("--local-dir")
+        .arg(store)
+        .args(["--repo", "owner/repo"]);
+    command
 }
 
 #[test]
@@ -266,25 +311,7 @@ fn baseline_fetch_prefers_exact_then_pointer_then_none() {
     let store = tmp.path().join("store");
     let out = tmp.path().join("base.json");
 
-    let fetch = |merge_base: &str, out: &std::path::Path| {
-        let mut cmd = badgers();
-        cmd.args([
-            "baseline",
-            "fetch",
-            "--merge-base",
-            merge_base,
-            "--base-ref",
-            "main",
-        ])
-        .arg("-o")
-        .arg(out)
-        .arg("--local-dir")
-        .arg(&store)
-        .args(["--repo", "owner/repo"]);
-        cmd
-    };
-
-    fetch(MISSING_SHA, &out)
+    fetch_baseline(&store, MISSING_SHA, &out)
         .assert()
         .success()
         .stdout(predicate::str::contains("baseline-kind=none"));
@@ -293,7 +320,7 @@ fn baseline_fetch_prefers_exact_then_pointer_then_none() {
     let snapshot = write_snapshot(tmp.path(), SHA);
     push(&store, &snapshot, SHA, "2026-07-19T00:00:00Z");
 
-    fetch(SHA, &out).assert().success().stdout(
+    fetch_baseline(&store, SHA, &out).assert().success().stdout(
         predicate::str::contains("baseline-kind=exact")
             .and(predicate::str::contains(format!("baseline-sha={SHA}"))),
     );
@@ -301,10 +328,144 @@ fn baseline_fetch_prefers_exact_then_pointer_then_none() {
     assert_eq!(fetched["commit_sha"], SHA);
     assert_eq!(fetched["files"][0]["path"], "pkg/calc.py");
 
-    fetch(MISSING_SHA, &out).assert().success().stdout(
-        predicate::str::contains("baseline-kind=approximate")
-            .and(predicate::str::contains(format!("baseline-sha={SHA}"))),
-    );
+    fetch_baseline(&store, MISSING_SHA, &out)
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("baseline-kind=approximate")
+                .and(predicate::str::contains(format!("baseline-sha={SHA}"))),
+        );
+}
+
+#[test]
+fn baseline_fetch_rejects_unsupported_pointer_schema_version() {
+    const MISSING_SHA: &str = "b100000000000000000000000000000000000000";
+    const POINTER_SHA: &str = "a100000000000000000000000000000000000000";
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store");
+    let output = tmp.path().join("base.json");
+    let keys = Keys::new("badgers", "owner/repo");
+    let mut pointer = branch_pointer(POINTER_SHA, keys.commit_snapshot(POINTER_SHA));
+    pointer.schema_version = POINTER_SCHEMA_VERSION + 1;
+    write_branch_pointer(&store, &pointer);
+
+    fetch_baseline(&store, MISSING_SHA, &output)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "unsupported pointer schema version 2",
+        ));
+    assert!(!output.exists());
+}
+
+#[test]
+fn baseline_fetch_rejects_pointer_for_another_branch() {
+    const MISSING_SHA: &str = "b100000000000000000000000000000000000000";
+    const POINTER_SHA: &str = "a100000000000000000000000000000000000000";
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store");
+    let output = tmp.path().join("base.json");
+    let keys = Keys::new("badgers", "owner/repo");
+    let mut pointer = branch_pointer(POINTER_SHA, keys.commit_snapshot(POINTER_SHA));
+    pointer.branch = "release".to_string();
+    write_branch_pointer(&store, &pointer);
+
+    fetch_baseline(&store, MISSING_SHA, &output)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "belongs to branch \"release\", not \"main\"",
+        ));
+    assert!(!output.exists());
+}
+
+#[test]
+fn baseline_fetch_rejects_pointer_snapshot_for_another_commit() {
+    const MISSING_SHA: &str = "b100000000000000000000000000000000000000";
+    const POINTER_SHA: &str = "a100000000000000000000000000000000000000";
+    const SNAPSHOT_SHA: &str = "c100000000000000000000000000000000000000";
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store");
+    let output = tmp.path().join("base.json");
+    let keys = Keys::new("badgers", "owner/repo");
+    let pointer = branch_pointer(POINTER_SHA, keys.commit_snapshot(SNAPSHOT_SHA));
+    write_branch_pointer(&store, &pointer);
+
+    fetch_baseline(&store, MISSING_SHA, &output)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "snapshot path does not match commit",
+        ));
+    assert!(!output.exists());
+}
+
+#[test]
+fn baseline_fetch_rejects_snapshot_with_mismatched_metadata() {
+    const SHA: &str = "a100000000000000000000000000000000000000";
+    const OTHER_SHA: &str = "b100000000000000000000000000000000000000";
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store");
+    let output = tmp.path().join("base.json");
+    let snapshot = write_snapshot(tmp.path(), OTHER_SHA);
+    let compressed = zstd::encode_all(std::fs::read(snapshot).unwrap().as_slice(), 3).unwrap();
+    let key = Keys::new("badgers", "owner/repo").commit_snapshot(SHA);
+    write_store_object(&store, &key, &compressed);
+
+    fetch_baseline(&store, SHA, &output)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("stored coverage snapshot commit"));
+    assert!(!output.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn baseline_fetch_rejects_symlinked_pointer_snapshot_path() {
+    const MISSING_SHA: &str = "b100000000000000000000000000000000000000";
+    const POINTER_SHA: &str = "a100000000000000000000000000000000000000";
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store");
+    let outside = tmp.path().join("outside");
+    let output = tmp.path().join("base.json");
+    let keys = Keys::new("badgers", "owner/repo");
+    let snapshot_key = keys.commit_snapshot(POINTER_SHA);
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("coverage.json.zst"), b"not a snapshot").unwrap();
+    let linked = store.join(format!("badgers/repos/owner/repo/commits/{POINTER_SHA}"));
+    std::fs::create_dir_all(linked.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&outside, &linked).unwrap();
+    write_branch_pointer(&store, &branch_pointer(POINTER_SHA, snapshot_key));
+
+    fetch_baseline(&store, MISSING_SHA, &output)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("symlink"));
+    assert!(!output.exists());
+}
+
+#[test]
+fn baseline_fetch_decodes_compressed_pointer_snapshot_from_local_checkout() {
+    const MISSING_SHA: &str = "b100000000000000000000000000000000000000";
+    const POINTER_SHA: &str = "a100000000000000000000000000000000000000";
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store");
+    let output = tmp.path().join("base.json");
+    let snapshot = write_snapshot(tmp.path(), POINTER_SHA);
+    let snapshot_json = std::fs::read(snapshot).unwrap();
+    let compressed = zstd::encode_all(snapshot_json.as_slice(), 3).unwrap();
+    let keys = Keys::new("badgers", "owner/repo");
+    let snapshot_key = keys.commit_snapshot(POINTER_SHA);
+    write_store_object(&store, &snapshot_key, &compressed);
+    write_branch_pointer(&store, &branch_pointer(POINTER_SHA, snapshot_key.clone()));
+
+    fetch_baseline(&store, MISSING_SHA, &output)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("baseline-kind=approximate").and(
+            predicate::str::contains(format!("baseline-sha={POINTER_SHA}")),
+        ));
+    assert_eq!(std::fs::read(output).unwrap(), snapshot_json);
 }
 
 #[test]
