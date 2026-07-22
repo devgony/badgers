@@ -714,8 +714,8 @@ runs:
       run: |
         set -euo pipefail
         if [ ! -f "$BADGERS_COMPARISON" ]; then
-          echo "::notice::No coverage comparison is available; skipping fail-on-uncovered gate"
-          exit 0
+          echo "::error::fail-on-uncovered is enabled but no coverage comparison was produced; failing instead of silently passing"
+          exit 1
         fi
 
         UNCOVERED=$(jq \
