@@ -65,6 +65,18 @@ for report-only mode and `--baseline <snapshot.json>` to include the total
 coverage delta. The bundled `skills/fill-coverage` skill packages this
 workflow for coding agents.
 
+Early-stage projects can target the whole repository instead of a pull
+request diff:
+
+```bash
+badgers cov --all --path src/parser
+```
+
+With `--all`, every uncovered executable line is reported regardless of
+what changed, and repeatable `--path` prefixes scope the list, the totals,
+and the exit code to one module at a time. The `skills/fill-coverage-all`
+skill drives this module-by-module loop for coding agents.
+
 Both commands infer the source repository from the checkout's local `origin`.
 The `view` command follows `prs/547/latest.json`, caches the referenced HTML
 bundle, and opens its self-contained `index.html`. Same-repository storage is
