@@ -2,16 +2,53 @@ use std::fmt::Write as _;
 
 use badge_rs_core::compare::{Comparison, FileDelta};
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RenderOptions {
+    heading: &'static str,
+    uncovered_qualifier: &'static str,
+    marker: &'static str,
+    show_changed_line_coverage: bool,
+}
+
+impl RenderOptions {
+    pub(crate) const REPO_WIDE: Self = Self {
+        heading: "Coverage",
+        uncovered_qualifier: "",
+        marker: "uncovered",
+        show_changed_line_coverage: false,
+    };
+
+    const DIFF: Self = Self {
+        heading: "Coverage diff",
+        uncovered_qualifier: "changed ",
+        marker: "changed-uncovered",
+        show_changed_line_coverage: true,
+    };
+}
+
 pub(crate) fn render_comparison(context: &str, comparison: &Comparison) -> String {
+    render_comparison_with_options(context, comparison, RenderOptions::DIFF)
+}
+
+pub(crate) fn render_comparison_with_options(
+    context: &str,
+    comparison: &Comparison,
+    options: RenderOptions,
+) -> String {
     let uncovered = uncovered_count(comparison);
     let noun = if uncovered == 1 { "line" } else { "lines" };
     let mut out = String::new();
     if uncovered == 0 {
-        let _ = writeln!(out, "Coverage diff: no uncovered changed executable lines");
+        let _ = writeln!(
+            out,
+            "{}: no uncovered {}executable lines",
+            options.heading, options.uncovered_qualifier
+        );
     } else {
         let _ = writeln!(
             out,
-            "Coverage diff: {uncovered} uncovered changed executable {noun}"
+            "{}: {uncovered} uncovered {}executable {noun}",
+            options.heading, options.uncovered_qualifier
         );
     }
     let _ = writeln!(out, "{context}");
@@ -23,14 +60,16 @@ pub(crate) fn render_comparison(context: &str, comparison: &Comparison) -> Strin
         format_pct(totals.pct()),
         format_delta(comparison)
     );
-    let diff = comparison.diff_totals();
-    let _ = writeln!(
-        out,
-        "Changed-line coverage: {} ({}/{})",
-        format_pct(diff.pct()),
-        diff.covered,
-        diff.relevant
-    );
+    if options.show_changed_line_coverage {
+        let diff = comparison.diff_totals();
+        let _ = writeln!(
+            out,
+            "Changed-line coverage: {} ({}/{})",
+            format_pct(diff.pct()),
+            diff.covered,
+            diff.relevant
+        );
+    }
 
     if uncovered > 0 {
         let mut files: Vec<_> = comparison
@@ -46,9 +85,10 @@ pub(crate) fn render_comparison(context: &str, comparison: &Comparison) -> Strin
             let ranges = line_ranges(&lines);
             let _ = writeln!(
                 out,
-                "{}:{} [changed-uncovered]",
+                "{}:{} [{}]",
                 escape_path(&file.path),
-                ranges.join(",")
+                ranges.join(","),
+                options.marker
             );
         }
     }

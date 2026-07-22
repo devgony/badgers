@@ -3,13 +3,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use anyhow::{Context, Result, bail, ensure};
-use badge_rs_core::compare::{Comparison, compare};
+use badge_rs_core::compare::{ChangedLines, Comparison, compare};
 use badge_rs_core::diff::parse_unified_diff;
 use badge_rs_core::{CoverageSnapshot, ToolVersions};
 use badge_rs_lcov::{ParseOptions, parse_lcov};
 use clap::Args;
 
-use crate::render::{render_comparison, uncovered_count};
+use crate::render::{
+    RenderOptions, render_comparison, render_comparison_with_options, uncovered_count,
+};
 use crate::report::{git_diff_output, read_snapshot};
 
 #[derive(Args, Debug)]
@@ -18,11 +20,19 @@ pub struct CovArgs {
     #[arg(long, value_name = "REF")]
     pub base_ref: Option<String>,
 
+    /// Report all uncovered executable lines without diffing against a base ref
+    #[arg(long, conflicts_with = "base_ref")]
+    pub all: bool,
+
+    /// Only include repo-relative paths under this prefix; filters all displayed totals and exit status
+    #[arg(long, value_name = "PATH")]
+    pub path: Vec<String>,
+
     /// Use an existing LCOV file instead of running coverage
     #[arg(long, value_name = "PATH")]
     pub lcov_file: Option<PathBuf>,
 
-    /// Optional base coverage snapshot JSON (for total-coverage delta)
+    /// Optional base coverage snapshot JSON for the filtered total-coverage delta
     #[arg(long, value_name = "PATH")]
     pub baseline: Option<PathBuf>,
 
@@ -30,7 +40,7 @@ pub struct CovArgs {
     #[arg(long, value_name = "PATH", default_value = ".")]
     pub repo_root: PathBuf,
 
-    /// Always exit 0, even when uncovered changed lines remain
+    /// Always exit 0, even when displayed uncovered lines remain
     #[arg(long)]
     pub no_fail: bool,
 }
@@ -38,21 +48,29 @@ pub struct CovArgs {
 pub fn run(args: &CovArgs) -> Result<ExitCode> {
     let repo_root = fs::canonicalize(&args.repo_root)
         .with_context(|| format!("repo root '{}' not found", args.repo_root.display()))?;
-    let base_ref = resolve_base_ref(&repo_root, args.base_ref.as_deref())?;
-    let merge_base = git_output(
-        &repo_root,
-        &["merge-base", &base_ref, "HEAD"],
-        &format!("finding merge base for {base_ref} and HEAD"),
-    )?;
-    ensure!(
-        !merge_base.is_empty(),
-        "git merge-base returned an empty commit SHA"
-    );
-
-    let changed = parse_unified_diff(&git_diff_output(&repo_root, &merge_base)?);
+    let changed = if args.all {
+        None
+    } else {
+        let base_ref = resolve_base_ref(&repo_root, args.base_ref.as_deref())?;
+        let merge_base = git_output(
+            &repo_root,
+            &["merge-base", &base_ref, "HEAD"],
+            &format!("finding merge base for {base_ref} and HEAD"),
+        )?;
+        ensure!(
+            !merge_base.is_empty(),
+            "git merge-base returned an empty commit SHA"
+        );
+        Some(parse_unified_diff(&git_diff_output(
+            &repo_root,
+            &merge_base,
+        )?))
+    };
     let head = head_snapshot(args, &repo_root)?;
+    let changed = changed.unwrap_or_else(|| all_executable_lines(&head));
     let base = args.baseline.as_deref().map(read_snapshot).transpose()?;
-    let comparison = compare(base.as_ref(), &head, &changed);
+    let mut comparison = compare(base.as_ref(), &head, &changed);
+    filter_comparison(&mut comparison, &args.path);
 
     let branch = git_output(
         &repo_root,
@@ -68,9 +86,60 @@ pub fn run(args: &CovArgs) -> Result<ExitCode> {
     let short_sha = &head.commit_sha[..head.commit_sha.len().min(7)];
     let dirty_marker = if dirty { " (dirty)" } else { "" };
     let context = format!("Local: {branch} @ {short_sha}{dirty_marker}");
-    print!("{}", render_comparison(&context, &comparison));
+    let rendered = if args.all {
+        render_comparison_with_options(&context, &comparison, RenderOptions::REPO_WIDE)
+    } else {
+        render_comparison(&context, &comparison)
+    };
+    print!("{rendered}");
 
     Ok(comparison_exit_code(&comparison, args.no_fail))
+}
+
+fn all_executable_lines(snapshot: &CoverageSnapshot) -> ChangedLines {
+    ChangedLines(
+        snapshot
+            .files
+            .iter()
+            .map(|file| {
+                (
+                    file.path.clone(),
+                    file.line_hits
+                        .iter()
+                        .map(|line_hit| line_hit.line)
+                        .collect(),
+                )
+            })
+            .collect(),
+    )
+}
+
+fn filter_comparison(comparison: &mut Comparison, paths: &[String]) {
+    if paths.is_empty() {
+        return;
+    }
+    let prefixes: Vec<String> = paths.iter().map(|path| normalize_prefix(path)).collect();
+    comparison.files.retain(|file| {
+        prefixes
+            .iter()
+            .any(|prefix| path_matches(&file.path, prefix))
+    });
+}
+
+fn normalize_prefix(prefix: &str) -> String {
+    prefix
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn path_matches(path: &str, prefix: &str) -> bool {
+    prefix.is_empty()
+        || path == prefix
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 fn resolve_base_ref(repo_root: &Path, explicit: Option<&str>) -> Result<String> {
@@ -243,6 +312,32 @@ mod tests {
         compare(None, &head, &changed)
     }
 
+    fn snapshot(files: Vec<FileCoverage>) -> CoverageSnapshot {
+        CoverageSnapshot::new(
+            "owner/repo".into(),
+            "0123456789abcdef0123456789abcdef01234567".into(),
+            None,
+            None,
+            "2026-07-21T00:00:00Z".into(),
+            ToolVersions {
+                badgers: "0.1.1".into(),
+                cargo_llvm_cov: None,
+                coverage_py: None,
+            },
+            files,
+        )
+    }
+
+    fn file(path: &str, hits: &[(u32, u64)]) -> FileCoverage {
+        FileCoverage::new(
+            path.into(),
+            Language::from_path(path),
+            hits.iter()
+                .map(|&(line, hits)| LineHit { line, hits })
+                .collect(),
+        )
+    }
+
     #[test]
     fn renders_local_dirty_header_and_comparison() {
         let comparison = comparison_with_uncovered_line();
@@ -267,5 +362,82 @@ src/lib.rs:11 [changed-uncovered]\n"
             files: Vec::new(),
         };
         assert_eq!(comparison_exit_code(&clean, false), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn renders_repo_wide_uncovered_lines() {
+        let comparison = comparison_with_uncovered_line();
+        assert_eq!(
+            render_comparison_with_options(
+                "Local: main @ 0123456 (dirty)",
+                &comparison,
+                RenderOptions::REPO_WIDE,
+            ),
+            "Coverage: 1 uncovered executable line\n\
+Local: main @ 0123456 (dirty)\n\
+Total coverage: 50.00% (no baseline)\n\
+src/lib.rs:11 [uncovered]\n"
+        );
+    }
+
+    #[test]
+    fn renders_clean_repo_wide_coverage() {
+        let head = snapshot(vec![file("src/lib.rs", &[(10, 1), (11, 2)])]);
+        let comparison = compare(None, &head, &all_executable_lines(&head));
+        assert_eq!(
+            render_comparison_with_options(
+                "Local: main @ 0123456",
+                &comparison,
+                RenderOptions::REPO_WIDE,
+            ),
+            "Coverage: no uncovered executable lines\n\
+Local: main @ 0123456\n\
+Total coverage: 100.00% (no baseline)\n"
+        );
+    }
+
+    #[test]
+    fn path_filter_controls_rendered_files_totals_and_exit_code() {
+        let base = snapshot(vec![
+            file("crates/badgers-cli/src/cov.rs", &[(10, 0), (11, 0)]),
+            file("crates/badgers-core/src/lib.rs", &[(20, 1), (21, 1)]),
+            file("covered/src/lib.rs", &[(30, 1)]),
+        ]);
+        let head = snapshot(vec![
+            file("crates/badgers-cli/src/cov.rs", &[(10, 1), (11, 0)]),
+            file("crates/badgers-core/src/lib.rs", &[(20, 0), (21, 0)]),
+            file("covered/src/lib.rs", &[(30, 1)]),
+        ]);
+        let changed = all_executable_lines(&head);
+        let mut comparison = compare(Some(&base), &head, &changed);
+        filter_comparison(&mut comparison, &["./crates/badgers-cli/".into()]);
+
+        assert_eq!(
+            render_comparison("Local: main @ 0123456", &comparison),
+            "Coverage diff: 1 uncovered changed executable line\n\
+Local: main @ 0123456\n\
+Total coverage: 50.00% (+50.00pp)\n\
+Changed-line coverage: 50.00% (1/2)\n\
+crates/badgers-cli/src/cov.rs:11 [changed-uncovered]\n"
+        );
+        assert_eq!(uncovered_count(&comparison), 1);
+        assert_eq!(comparison_exit_code(&comparison, false), ExitCode::from(1));
+
+        let mut covered_only = compare(Some(&base), &head, &changed);
+        filter_comparison(&mut covered_only, &["covered".into()]);
+        assert_eq!(
+            comparison_exit_code(&covered_only, false),
+            ExitCode::SUCCESS
+        );
+    }
+
+    #[test]
+    fn path_prefixes_match_component_boundaries() {
+        assert!(path_matches(
+            "src/foo/lib.rs",
+            &normalize_prefix("src/foo/")
+        ));
+        assert!(path_matches("src/foo", &normalize_prefix("./src/foo")));
+        assert!(!path_matches("src/foobar.rs", &normalize_prefix("src/foo")));
     }
 }

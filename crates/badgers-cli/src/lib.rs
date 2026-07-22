@@ -41,7 +41,7 @@ pub enum Command {
     Setup(SetupCommand),
     /// Show the latest stored coverage diff for a pull request
     Diff(diff::DiffArgs),
-    /// Run coverage locally and report uncovered changed lines
+    /// Run coverage locally and report uncovered changed or repo-wide lines
     Cov(cov::CovArgs),
     /// Download and open the latest stored HTML report for a pull request
     View(view::ViewArgs),
