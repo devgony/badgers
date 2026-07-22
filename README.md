@@ -77,6 +77,20 @@ what changed, and repeatable `--path` prefixes scope the list, the totals,
 and the exit code to one module at a time. The `skills/fill-coverage-all`
 skill drives this module-by-module loop for coding agents.
 
+Install the skills once per repository and commit the result so every
+teammate and coding agent picks them up on the next pull:
+
+```bash
+npx skills add devgony/badgers@fill-coverage --copy
+npx skills add devgony/badgers@fill-coverage-all --copy
+git add .agents .claude skills-lock.json && git commit -m "chore: add badgers coverage skills"
+```
+
+The skills CLI detects installed agents automatically; extra flags are not
+required for interactive use. `--copy` writes real files instead of
+symlinks so checkouts on Windows work without developer mode. Update later
+with `npx skills update -p`.
+
 Both commands infer the source repository from the checkout's local `origin`.
 The `view` command follows `prs/547/latest.json`, caches the referenced HTML
 bundle, and opens its self-contained `index.html`. Same-repository storage is
