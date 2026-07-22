@@ -54,8 +54,8 @@ inputs:
     default: "false"
   github-storage-repo:
     description: >
-      GitHub repository used as durable report storage (owner/repo).
-      Empty disables repository storage.
+      GitHub repository used for durable reports and baseline snapshots
+      (owner/repo). Empty disables repository storage.
     default: ""
   github-storage-branch:
     description: Dedicated branch used in the storage repository
@@ -220,11 +220,75 @@ runs:
           --repo "$GITHUB_REPOSITORY" \
           -o /tmp/badgers-base-snapshot.json | tee -a "$GITHUB_OUTPUT"
 
+    - name: Fetch baseline snapshot from GitHub repository storage
+      id: github-baseline
+      if: >-
+        github.event_name == 'pull_request' &&
+        inputs.github-storage-repo != '' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        steps.gcs-baseline.outputs.baseline-kind != 'exact' &&
+        steps.gcs-baseline.outputs.baseline-kind != 'approximate'
+      shell: bash
+      env:
+        BADGERS_BASE_REF: ${{ github.base_ref }}
+        BADGERS_STORAGE_REPO: ${{ inputs.github-storage-repo }}
+        BADGERS_STORAGE_BRANCH: ${{ inputs.github-storage-branch }}
+        BADGERS_STORAGE_PREFIX: ${{ inputs.github-storage-prefix }}
+        BADGERS_STORAGE_TOKEN: ${{ inputs.github-storage-token }}
+      run: |
+        set -euo pipefail
+        if [[ ! "$BADGERS_STORAGE_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
+           [[ "$BADGERS_STORAGE_REPO" == ./* || "$BADGERS_STORAGE_REPO" == */. ||
+              "$BADGERS_STORAGE_REPO" == ../* || "$BADGERS_STORAGE_REPO" == */.. ]]; then
+          echo "::error::github-storage-repo must be a safe owner/repo"
+          exit 1
+        fi
+        if [[ "$BADGERS_STORAGE_BRANCH" == refs/* || "$BADGERS_STORAGE_BRANCH" == @\{-* ]]; then
+          echo "::error::github-storage-branch must be an unqualified branch name"
+          exit 1
+        fi
+        git check-ref-format "refs/heads/$BADGERS_STORAGE_BRANCH" >/dev/null
+        git check-ref-format --branch "$BADGERS_BASE_REF" >/dev/null
+        python3 -c \
+          'import sys; p=sys.argv[1]; parts=p.strip("/").split("/") if p.strip("/") else []; bad="\\" in p or any(x in ("", ".", "..") for x in parts); sys.exit("unsafe storage prefix") if bad else None' \
+          "$BADGERS_STORAGE_PREFIX"
+
+        if [ -z "$BADGERS_STORAGE_TOKEN" ]; then
+          echo "::notice::github-storage-token is empty; rebuilding the baseline"
+          printf 'baseline-kind=none\nbaseline-sha=\n' >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "::add-mask::$BADGERS_STORAGE_TOKEN"
+        AUTH_HEADER=$(printf 'x-access-token:%s' "$BADGERS_STORAGE_TOKEN" | base64 | tr -d '\n')
+        echo "::add-mask::$AUTH_HEADER"
+        REMOTE="${GITHUB_SERVER_URL}/${BADGERS_STORAGE_REPO}.git"
+        STORE=$(mktemp -d)
+        if ! git -c "http.${GITHUB_SERVER_URL}/.extraheader=AUTHORIZATION: basic $AUTH_HEADER" \
+            clone --quiet --no-checkout --depth 1 --single-branch \
+            --branch "$BADGERS_STORAGE_BRANCH" \
+            "$REMOTE" "$STORE"; then
+          echo "::notice::GitHub repository storage is unavailable; rebuilding the baseline"
+          printf 'baseline-kind=none\nbaseline-sha=\n' >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        GIT_LFS_SKIP_SMUDGE=1 git -C "$STORE" checkout --quiet "$BADGERS_STORAGE_BRANCH"
+
+        MERGE_BASE=$(git merge-base "origin/${BADGERS_BASE_REF}" HEAD)
+        badgers baseline fetch \
+          --merge-base "$MERGE_BASE" \
+          --base-ref "$BADGERS_BASE_REF" \
+          --local-dir "$STORE" \
+          --prefix "$BADGERS_STORAGE_PREFIX" \
+          --repo "$GITHUB_REPOSITORY" \
+          -o /tmp/badgers-base-snapshot.json | tee -a "$GITHUB_OUTPUT"
+
     - name: Build baseline snapshot from merge-base
       if: >-
         github.event_name == 'pull_request' &&
         steps.gcs-baseline.outputs.baseline-kind != 'exact' &&
-        steps.gcs-baseline.outputs.baseline-kind != 'approximate'
+        steps.gcs-baseline.outputs.baseline-kind != 'approximate' &&
+        steps.github-baseline.outputs.baseline-kind != 'exact' &&
+        steps.github-baseline.outputs.baseline-kind != 'approximate'
       shell: bash
       env:
         BADGERS_BASE_REF: ${{ github.base_ref }}
@@ -626,8 +690,8 @@ runs:
         BADGERS_CHECK_ANNOTATIONS: ${{ inputs.check-annotations }}
         BADGERS_FILES_CHANGED_URL: ${{ steps.report-navigation.outputs.files-changed-url }}
         BADGERS_MARKDOWN_REPORT_URL: ${{ steps.report-navigation.outputs.durable-report-url }}
-        BADGERS_BASELINE_KIND: ${{ steps.gcs-baseline.outputs.baseline-kind }}
-        BADGERS_BASELINE_SHA: ${{ steps.gcs-baseline.outputs.baseline-sha }}
+        BADGERS_BASELINE_KIND: ${{ steps.github-baseline.outputs.baseline-kind || steps.gcs-baseline.outputs.baseline-kind }}
+        BADGERS_BASELINE_SHA: ${{ steps.github-baseline.outputs.baseline-sha || steps.gcs-baseline.outputs.baseline-sha }}
         BADGERS_BASE_REF: ${{ github.base_ref }}
         BADGERS_HTML_REPORT_URL: ${{ steps.pages.outputs.report-url }}
         BADGERS_PR_NUMBER: ${{ github.event.pull_request.number }}

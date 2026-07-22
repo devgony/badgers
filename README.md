@@ -126,7 +126,10 @@ Badgers uses proven ecosystem tools and normalizes their output into one coverag
 
 ## Storage
 
-Badgers is GCS-first. A typical layout looks like this:
+Badgers supports GCS and GitHub repository storage. Both backends store the
+same snapshot and pointer layout, and both can supply a pull request baseline
+without re-running the test suite at the merge-base. A typical layout looks
+like this:
 
 ```text
 gs://coverage-bucket/badgers/repos/{owner}/{repo}/
@@ -226,7 +229,10 @@ so these auxiliary links may change with GitHub's web UI.
 ## GitHub Repository Storage
 
 Set `github-storage-repo` to keep browsable reports and compressed snapshots in
-a dedicated Git branch. `github-storage-branch` defaults to
+a dedicated Git branch. On pull requests, Badgers reads the exact merge-base
+snapshot from this branch when available, then falls back to the latest base
+branch pointer. It only re-runs the coverage command at the merge-base when
+neither snapshot is stored. `github-storage-branch` defaults to
 `badgers-coverage`; `github-storage-prefix` defaults to `badgers`.
 
 ```text
