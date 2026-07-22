@@ -26,3 +26,10 @@ def fizzbuzz(n):
     if n % 5 == 0:
         return "buzz"
     return str(n)
+
+
+def gate_probe(x):
+    y = x * 3
+    if y > 9:
+        return y - 2
+    return y + 2
