@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use badge_rs_core::compare::{ChangedLines, Comparison, compare};
+use badge_rs_core::compare::{ChangedLines, ComparisonAnalysis, CoverageScopeChangeKind};
 use badge_rs_core::coverage_pct;
 use badge_rs_core::diff::parse_unified_diff;
 use badge_rs_github::{CheckAnnotation, CommentAction, GithubClient};
@@ -13,7 +13,8 @@ use crate::github_storage::{
     DEFAULT_STORAGE_BRANCH, DEFAULT_STORAGE_PREFIX, GithubReportLocation, SHELL_INSTALL_COMMAND,
     html_escape,
 };
-use crate::report::{git_diff_output, git_path_prefix, read_snapshot};
+use crate::render::{bounded_scope_entries, render_omitted_scope_count};
+use crate::report::{compare_for_report, git_diff_output, git_path_prefix, read_snapshot};
 
 #[derive(Args, Debug)]
 pub struct GithubArgs {
@@ -98,7 +99,13 @@ pub fn run(args: &GithubArgs) -> Result<()> {
         Some(range) => parse_unified_diff(&git_diff_output(&args.repo_root, range)?),
         None => ChangedLines::default(),
     };
-    let comparison = compare(base.as_ref(), &head, &changed);
+    let comparison = compare_for_report(
+        base.as_ref(),
+        &head,
+        &changed,
+        &args.repo_root,
+        args.git_diff.is_some(),
+    )?;
 
     let marker = comment_marker(args)?;
     let body = render_comment(&marker, &comparison, args);
@@ -277,7 +284,10 @@ fn validate_report_url(url: Option<&str>) -> Result<()> {
 
 const MAX_CHECK_ANNOTATIONS: usize = 1_000;
 
-fn build_annotations(comparison: &Comparison, path_prefix: &str) -> (Vec<CheckAnnotation>, usize) {
+fn build_annotations(
+    comparison: &ComparisonAnalysis,
+    path_prefix: &str,
+) -> (Vec<CheckAnnotation>, usize) {
     let prefix = path_prefix.trim_matches('/');
     let all = comparison
         .files
@@ -297,7 +307,7 @@ fn build_annotations(comparison: &Comparison, path_prefix: &str) -> (Vec<CheckAn
     (all.into_iter().take(MAX_CHECK_ANNOTATIONS).collect(), total)
 }
 
-fn render_comment(marker: &str, comparison: &Comparison, args: &GithubArgs) -> String {
+fn render_comment(marker: &str, comparison: &ComparisonAnalysis, args: &GithubArgs) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "{marker}");
     let _ = writeln!(out, "## 🦡 Badgers Coverage Report");
@@ -312,7 +322,11 @@ fn render_comment(marker: &str, comparison: &Comparison, args: &GithubArgs) -> S
         fmt_pct(coverage_pct(head.covered, head.executable)),
         head.covered,
         head.executable,
-        fmt_delta(comparison.delta_pct(), comparison.base_available),
+        fmt_delta(
+            comparison.delta_pct(),
+            comparison.base_available,
+            comparison.scope_changed()
+        ),
     );
 
     let diff = comparison.diff_totals();
@@ -331,6 +345,8 @@ fn render_comment(marker: &str, comparison: &Comparison, args: &GithubArgs) -> S
     };
     let _ = writeln!(out, "| **Diff** | {diff_cell} | |");
     let _ = writeln!(out);
+
+    render_scope_change(&mut out, comparison);
 
     let mut context_line = Vec::new();
     if let Some(label) = &args.baseline_label {
@@ -417,7 +433,7 @@ fn stored_report_location(args: &GithubArgs) -> Result<Option<GithubReportLocati
 
 const MAX_RANGES_PER_FILE: usize = 10;
 
-fn render_uncovered(out: &mut String, comparison: &Comparison) {
+fn render_uncovered(out: &mut String, comparison: &ComparisonAnalysis) {
     let files: Vec<_> = comparison
         .files
         .iter()
@@ -517,7 +533,10 @@ fn fmt_pct(pct: Option<f64>) -> String {
     }
 }
 
-fn fmt_delta(delta: Option<f64>, base_available: bool) -> String {
+fn fmt_delta(delta: Option<f64>, base_available: bool, scope_changed: bool) -> String {
+    if scope_changed {
+        return "n/a (scope changed)".to_string();
+    }
     match delta {
         Some(d) if d >= 0.005 => format!("🟢 +{d:.2}%p"),
         Some(d) if d <= -0.005 => format!("🔴 {d:.2}%p"),
@@ -525,6 +544,26 @@ fn fmt_delta(delta: Option<f64>, base_available: bool) -> String {
         None if base_available => "n/a".to_string(),
         None => "n/a (no baseline)".to_string(),
     }
+}
+
+fn render_scope_change(out: &mut String, comparison: &ComparisonAnalysis) {
+    if !comparison.scope_changed() {
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "> **coverage scope changed:** aggregate delta is suppressed because the measured file set changed."
+    );
+    let (entries, omitted) = bounded_scope_entries(comparison);
+    for entry in entries {
+        let label = match entry.kind {
+            CoverageScopeChangeKind::Appeared => "Appeared in coverage",
+            CoverageScopeChangeKind::Disappeared => "Disappeared from coverage",
+        };
+        let _ = writeln!(out, "- {label}: {}", markdown_code_path(entry.path));
+    }
+    render_omitted_scope_count(out, omitted);
+    let _ = writeln!(out);
 }
 
 fn short_sha(sha: &str) -> String {
@@ -546,7 +585,7 @@ fn comment_marker(args: &GithubArgs) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use badge_rs_core::compare::{Counts, DiffCoverage, FileDelta};
+    use badge_rs_core::compare::{Comparison, Counts, DiffCoverage, FileDelta};
 
     use super::*;
 
@@ -572,7 +611,7 @@ mod tests {
         }
     }
 
-    fn comparison() -> Comparison {
+    fn comparison() -> ComparisonAnalysis {
         Comparison {
             base_available: true,
             files: vec![FileDelta {
@@ -592,6 +631,7 @@ mod tests {
                 },
             }],
         }
+        .into()
     }
 
     #[test]
@@ -759,5 +799,37 @@ mod tests {
         ));
         assert!(validate_report_url(Some("javascript:alert(1)")).is_err());
         assert!(validate_report_url(Some("https://user@example.com/report")).is_err());
+    }
+
+    #[test]
+    fn comment_explains_scope_change_and_affected_paths() {
+        let mut comparison = comparison();
+        comparison.scope_change.appeared = vec!["pkg/appeared.py".into()];
+        comparison.scope_change.disappeared = vec!["pkg/disappeared.py".into()];
+
+        let body = render_comment("<!-- m -->", &comparison, &args());
+
+        assert!(body.contains("| **Total** | 75.00% (3/4) | n/a (scope changed) |"));
+        assert!(body.contains("coverage scope changed"));
+        assert!(body.contains("aggregate delta is suppressed"));
+        assert!(body.contains("<code>pkg/appeared.py</code>"));
+        assert!(body.contains("<code>pkg/disappeared.py</code>"));
+    }
+
+    #[test]
+    fn github_scope_paths_are_escaped_and_bounded() {
+        let mut comparison = comparison();
+        comparison.scope_change.appeared = (0..=100)
+            .map(|index| format!("scope/{index:03}.py"))
+            .collect();
+        comparison.scope_change.appeared[0] = "scope/\ncontrol.py".into();
+        let mut body = String::new();
+
+        render_scope_change(&mut body, &comparison);
+
+        assert!(body.contains("<code>scope/&#xA;control.py</code>"));
+        assert!(!body.contains("scope/\ncontrol.py"));
+        assert!(body.contains("... and 1 more"));
+        assert!(!body.contains("scope/100.py"));
     }
 }

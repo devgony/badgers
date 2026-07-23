@@ -105,7 +105,7 @@ fn report_markdown_renders_hierarchy_and_source_links() {
 
     let comparison: serde_json::Value =
         serde_json::from_slice(&std::fs::read(comparison_output).unwrap()).unwrap();
-    assert_eq!(comparison["schema_version"], 1);
+    assert_eq!(comparison["schema_version"], 2);
     assert_eq!(comparison["head_sha"], "abcdef1234567890");
     assert_eq!(comparison["base_sha"], "abcdef1234567890");
     assert_eq!(comparison["comparison"]["files"][0]["path"], "README.md");

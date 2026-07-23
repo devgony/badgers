@@ -1,6 +1,10 @@
 use std::fmt::Write as _;
 
-use badge_rs_core::compare::{Comparison, FileDelta};
+use badge_rs_core::compare::{
+    Comparison, ComparisonAnalysis, CoverageScopeChangeKind, CoverageScopeEntry, FileDelta,
+};
+
+pub(crate) const MAX_RENDERED_SCOPE_PATHS: usize = 100;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RenderOptions {
@@ -30,9 +34,27 @@ pub(crate) fn render_comparison(context: &str, comparison: &Comparison) -> Strin
     render_comparison_with_options(context, comparison, RenderOptions::DIFF)
 }
 
+pub(crate) fn render_comparison_analysis(context: &str, analysis: &ComparisonAnalysis) -> String {
+    render_comparison_inner(
+        context,
+        &analysis.comparison,
+        Some(analysis),
+        RenderOptions::DIFF,
+    )
+}
+
 pub(crate) fn render_comparison_with_options(
     context: &str,
     comparison: &Comparison,
+    options: RenderOptions,
+) -> String {
+    render_comparison_inner(context, comparison, None, options)
+}
+
+fn render_comparison_inner(
+    context: &str,
+    comparison: &Comparison,
+    analysis: Option<&ComparisonAnalysis>,
     options: RenderOptions,
 ) -> String {
     let uncovered = uncovered_count(comparison);
@@ -58,7 +80,7 @@ pub(crate) fn render_comparison_with_options(
         out,
         "Total coverage: {} ({})",
         format_pct(totals.pct()),
-        format_delta(comparison)
+        format_delta(comparison, analysis)
     );
     if options.show_changed_line_coverage {
         let diff = comparison.diff_totals();
@@ -69,6 +91,19 @@ pub(crate) fn render_comparison_with_options(
             diff.covered,
             diff.relevant
         );
+    }
+
+    if let Some(analysis) = analysis.filter(|analysis| analysis.scope_changed()) {
+        let _ = writeln!(out, "Coverage scope changed; aggregate delta suppressed");
+        let (entries, omitted) = bounded_scope_entries(analysis);
+        for entry in entries {
+            let label = match entry.kind {
+                CoverageScopeChangeKind::Appeared => "appeared",
+                CoverageScopeChangeKind::Disappeared => "disappeared",
+            };
+            let _ = writeln!(out, "{label}: {}", escape_path(entry.path));
+        }
+        render_omitted_scope_count(&mut out, omitted);
     }
 
     if uncovered > 0 {
@@ -112,14 +147,34 @@ fn format_pct(value: Option<f64>) -> String {
         .unwrap_or_else(|| "n/a".into())
 }
 
-fn format_delta(comparison: &Comparison) -> String {
+fn format_delta(comparison: &Comparison, analysis: Option<&ComparisonAnalysis>) -> String {
     if !comparison.base_available {
         return "no baseline".into();
+    }
+    if analysis.is_some_and(ComparisonAnalysis::scope_changed) {
+        return "coverage scope changed".into();
     }
     comparison
         .delta_pct()
         .map(|delta| format!("{delta:+.2}pp"))
         .unwrap_or_else(|| "n/a".into())
+}
+
+pub(crate) fn bounded_scope_entries(
+    analysis: &ComparisonAnalysis,
+) -> (Vec<CoverageScopeEntry<'_>>, usize) {
+    let entries = analysis.affected_entries();
+    let omitted = entries.len().saturating_sub(MAX_RENDERED_SCOPE_PATHS);
+    (
+        entries.into_iter().take(MAX_RENDERED_SCOPE_PATHS).collect(),
+        omitted,
+    )
+}
+
+pub(crate) fn render_omitted_scope_count(out: &mut String, omitted: usize) {
+    if omitted > 0 {
+        let _ = writeln!(out, "... and {omitted} more");
+    }
 }
 
 fn line_ranges(lines: &[u32]) -> Vec<String> {

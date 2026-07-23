@@ -6,14 +6,16 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use badge_rs_core::CoverageSnapshot;
 use badge_rs_core::compare::{
-    COMPARISON_SCHEMA_VERSION, ChangedLines, Comparison, ComparisonDocument, FileDelta, compare,
+    COMPARISON_SCHEMA_VERSION, ChangedLines, ComparisonAnalysis, ComparisonAnalysisDocument,
+    CoverageScopeChangeKind, FileDelta,
 };
 use badge_rs_core::coverage_pct;
 use badge_rs_core::diff::parse_unified_diff;
 use clap::Args;
 use sha2::{Digest, Sha256};
 
-use crate::report::{git_diff_output, git_path_prefix, read_snapshot};
+use crate::render::{bounded_scope_entries, render_omitted_scope_count};
+use crate::report::{compare_for_report, git_diff_output, git_path_prefix, read_snapshot};
 
 #[derive(Args, Debug)]
 pub struct MarkdownArgs {
@@ -72,9 +74,15 @@ pub fn run(args: &MarkdownArgs) -> Result<()> {
     } else {
         ChangedLines::default()
     };
-    let comparison = compare(base.as_ref(), &head, &changed);
+    let comparison = compare_for_report(
+        base.as_ref(),
+        &head,
+        &changed,
+        &args.repo_root,
+        args.git_diff.is_some(),
+    )?;
     if let Some(path) = &args.comparison_output {
-        let document = ComparisonDocument {
+        let document = ComparisonAnalysisDocument {
             schema_version: COMPARISON_SCHEMA_VERSION,
             head_sha: head.commit_sha.clone(),
             base_sha: base.as_ref().map(|snapshot| snapshot.commit_sha.clone()),
@@ -240,7 +248,7 @@ struct LinkContext<'a> {
 
 fn render(
     head: &CoverageSnapshot,
-    comparison: &Comparison,
+    comparison: &ComparisonAnalysis,
     source_url: Option<&str>,
     files_changed_url: Option<&str>,
     repo_path_prefix: &str,
@@ -271,13 +279,19 @@ fn render(
         fmt_pct(totals.pct()),
         totals.covered,
         totals.executable,
-        fmt_delta(comparison.delta_pct(), comparison.base_available)
+        fmt_delta(
+            comparison.delta_pct(),
+            comparison.base_available,
+            comparison.scope_changed()
+        )
     );
+
     let _ = writeln!(
         out,
         "| **Changed lines** | {} | — |\n",
         diff_cell(diff.covered, diff.relevant)
     );
+    render_scope_change(comparison, &mut out);
 
     let mut root = DirNode::default();
     for (idx, file) in comparison.files.iter().enumerate() {
@@ -300,7 +314,7 @@ fn render(
 fn render_tree(
     node: &DirNode,
     depth: usize,
-    comparison: &Comparison,
+    comparison: &ComparisonAnalysis,
     links: LinkContext<'_>,
     out: &mut String,
 ) {
@@ -317,7 +331,8 @@ fn render_tree(
             agg.head_executable,
             fmt_delta(
                 agg.delta_pct(comparison.base_available),
-                comparison.base_available
+                comparison.base_available,
+                comparison.scope_changed()
             ),
             diff_cell(agg.diff_covered, agg.diff_relevant),
         );
@@ -329,7 +344,7 @@ fn render_tree(
 
 fn render_files(
     indices: &[usize],
-    comparison: &Comparison,
+    comparison: &ComparisonAnalysis,
     links: LinkContext<'_>,
     out: &mut String,
 ) {
@@ -359,14 +374,14 @@ fn render_files(
             } else {
                 code_path(&file.path)
             },
-            fmt_delta(file.delta_pct(), comparison.base_available),
+            fmt_delta(file.delta_pct(), comparison.base_available, false),
             diff_cell(file.diff.covered, file.diff.relevant),
         );
     }
     let _ = writeln!(out);
 }
 
-fn render_changed_files(comparison: &Comparison, links: LinkContext<'_>, out: &mut String) {
+fn render_changed_files(comparison: &ComparisonAnalysis, links: LinkContext<'_>, out: &mut String) {
     let changed: Vec<&FileDelta> = comparison
         .files
         .iter()
@@ -582,7 +597,10 @@ fn fmt_pct(pct: Option<f64>) -> String {
     }
 }
 
-fn fmt_delta(delta: Option<f64>, base_available: bool) -> String {
+fn fmt_delta(delta: Option<f64>, base_available: bool, scope_changed: bool) -> String {
+    if scope_changed {
+        return "n/a (scope changed)".to_string();
+    }
     match delta {
         Some(value) if value >= 0.005 => format!("🟢 +{value:.2}%p"),
         Some(value) if value <= -0.005 => format!("🔴 {value:.2}%p"),
@@ -590,6 +608,26 @@ fn fmt_delta(delta: Option<f64>, base_available: bool) -> String {
         None if base_available => "n/a".to_string(),
         None => "n/a (no baseline)".to_string(),
     }
+}
+
+fn render_scope_change(comparison: &ComparisonAnalysis, out: &mut String) {
+    if !comparison.scope_changed() {
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "> **coverage scope changed:** aggregate deltas are suppressed because the measured file set changed.\n"
+    );
+    let (entries, omitted) = bounded_scope_entries(comparison);
+    for entry in entries {
+        let label = match entry.kind {
+            CoverageScopeChangeKind::Appeared => "Appeared in coverage",
+            CoverageScopeChangeKind::Disappeared => "Disappeared from coverage",
+        };
+        let _ = writeln!(out, "- {label}: {}", code_path(entry.path));
+    }
+    render_omitted_scope_count(out, omitted);
+    let _ = writeln!(out);
 }
 
 fn diff_cell(covered: u32, relevant: u32) -> String {
@@ -609,7 +647,7 @@ fn short_sha(sha: &str) -> String {
 #[cfg(test)]
 mod tests {
     use badge_rs_core::ToolVersions;
-    use badge_rs_core::compare::{Counts, DiffCoverage};
+    use badge_rs_core::compare::{Comparison, Counts, CoverageScopeChange, DiffCoverage};
 
     use super::*;
 
@@ -629,9 +667,13 @@ mod tests {
         )
     }
 
+    fn analysis(comparison: Comparison) -> ComparisonAnalysis {
+        comparison.into()
+    }
+
     #[test]
     fn renders_nested_tree_and_changed_line_links() {
-        let comparison = Comparison {
+        let comparison = analysis(Comparison {
             base_available: true,
             files: vec![FileDelta {
                 path: "apps/api/src/app.py".into(),
@@ -649,7 +691,7 @@ mod tests {
                     uncovered_lines: vec![4, 5],
                 },
             }],
-        };
+        });
         let markdown = render(
             &snapshot(),
             &comparison,
@@ -680,7 +722,7 @@ mod tests {
 
     #[test]
     fn opens_only_changed_files_with_uncovered_lines() {
-        let comparison = Comparison {
+        let comparison = analysis(Comparison {
             base_available: false,
             files: vec![
                 FileDelta {
@@ -710,7 +752,7 @@ mod tests {
                     },
                 },
             ],
-        };
+        });
         let mut markdown = String::new();
         render_changed_files(
             &comparison,
@@ -779,10 +821,10 @@ mod tests {
 
         let markdown = render(
             &invalid,
-            &Comparison {
+            &analysis(Comparison {
                 base_available: false,
                 files: vec![],
-            },
+            }),
             None,
             None,
             "",
@@ -797,5 +839,69 @@ mod tests {
             code_path("pkg/__init__.py"),
             "<code>pkg/&#x5F;&#x5F;init&#x5F;&#x5F;.py</code>"
         );
+    }
+
+    #[test]
+    fn explains_scope_change_and_suppresses_aggregate_deltas() {
+        let comparison = ComparisonAnalysis {
+            comparison: Comparison {
+                base_available: true,
+                files: vec![FileDelta {
+                    path: "pkg/steady.py".into(),
+                    base: Some(Counts {
+                        covered: 1,
+                        executable: 2,
+                    }),
+                    head: Some(Counts {
+                        covered: 2,
+                        executable: 2,
+                    }),
+                    diff: DiffCoverage {
+                        relevant: 1,
+                        covered: 1,
+                        uncovered_lines: vec![],
+                    },
+                }],
+            },
+            scope_change: CoverageScopeChange {
+                appeared: vec!["pkg/appeared.py".into()],
+                disappeared: vec!["pkg/disappeared.py".into()],
+            },
+        };
+
+        let markdown = render(&snapshot(), &comparison, None, None, "");
+
+        assert!(markdown.contains("coverage scope changed"));
+        assert!(markdown.contains("aggregate deltas are suppressed"));
+        assert!(markdown.contains("<code>pkg/appeared.py</code>"));
+        assert!(markdown.contains("<code>pkg/disappeared.py</code>"));
+        assert!(markdown.contains("| **Total** | 100.00% (2/2) | n/a (scope changed) |"));
+        assert!(markdown.contains(
+            "| **Total** | 100.00% (2/2) | n/a (scope changed) |\n\
+             | **Changed lines** | 100.00% (1/1) | — |\n\n\
+             > **coverage scope changed:**"
+        ));
+        assert!(markdown.contains("pkg/steady.py</code> | 2 | 2 | 100.00% | 🟢 +50.00%p"));
+        assert!(!markdown.contains("<strong>pkg/</strong> — 100.00% (2/2) · Δ 🟢"));
+    }
+
+    #[test]
+    fn markdown_scope_paths_are_escaped_and_bounded() {
+        let mut comparison = analysis(Comparison {
+            base_available: true,
+            files: vec![],
+        });
+        comparison.scope_change.appeared = (0..=100)
+            .map(|index| format!("scope/{index:03}.py"))
+            .collect();
+        comparison.scope_change.appeared[0] = "scope/\ncontrol.py".into();
+        let mut markdown = String::new();
+
+        render_scope_change(&comparison, &mut markdown);
+
+        assert!(markdown.contains("<code>scope/&#x5C;ncontrol.py</code>"));
+        assert!(!markdown.contains("scope/\ncontrol.py"));
+        assert!(markdown.contains("... and 1 more"));
+        assert!(!markdown.contains("scope/100.py"));
     }
 }
