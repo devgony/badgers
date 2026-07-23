@@ -397,6 +397,7 @@ mod tests {
                 badgers: "0.1.0".into(),
                 cargo_llvm_cov: None,
                 coverage_py: None,
+                flutter: None,
             },
             files,
         )

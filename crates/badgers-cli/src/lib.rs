@@ -1,6 +1,7 @@
 mod baseline_fetch;
 mod cov;
 mod diff;
+mod flutter;
 mod github_storage;
 mod python;
 mod render;
@@ -20,7 +21,7 @@ use std::process::ExitCode;
 #[command(
     name = "badgers",
     version,
-    about = "Coverage checker for Rust and Python projects"
+    about = "Coverage checker for Rust, Python, and Flutter projects"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -55,6 +56,7 @@ pub enum SetupCommand {
 #[derive(Subcommand)]
 pub enum CollectCommand {
     Python(python::CollectPythonArgs),
+    Flutter(flutter::CollectFlutterArgs),
 }
 
 #[derive(Subcommand)]
@@ -77,6 +79,7 @@ pub enum BaselineCommand {
 pub fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     match cli.command {
         Command::Collect(CollectCommand::Python(args)) => success(python::run(&args)),
+        Command::Collect(CollectCommand::Flutter(args)) => success(flutter::run(&args)),
         Command::Report(ReportCommand::Html(args)) => success(report::run(&args)),
         Command::Report(ReportCommand::Github(args)) => success(report_github::run(&args)),
         Command::Report(ReportCommand::Markdown(args)) => success(report_markdown::run(&args)),

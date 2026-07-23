@@ -210,6 +210,7 @@ fn head_snapshot(args: &CovArgs, repo_root: &Path) -> Result<CoverageSnapshot> {
             badgers: env!("CARGO_PKG_VERSION").to_string(),
             cargo_llvm_cov: None,
             coverage_py: None,
+            flutter: None,
         },
         outcome.files,
     ))
@@ -235,6 +236,22 @@ fn run_coverage(repo_root: &Path) -> Result<String> {
                 String::from_utf8_lossy(&output.stderr).trim()
             );
         }
+    } else if repo_root.join("pubspec.yaml").is_file() {
+        let output = Command::new("flutter")
+            .args(["test", "--coverage"])
+            .current_dir(repo_root)
+            .output()
+            .context("failed to invoke flutter - is the Flutter SDK installed?")?;
+        if !output.status.success() {
+            bail!(
+                "`flutter test --coverage` failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        let lcov_path = repo_root.join("coverage").join("lcov.info");
+        return fs::read_to_string(&lcov_path).with_context(|| {
+            format!("failed to read generated LCOV at '{}'", lcov_path.display())
+        });
     } else {
         let output = Command::new("python3")
             .args(["-m", "coverage", "lcov", "-o"])
@@ -298,6 +315,7 @@ mod tests {
                 badgers: "0.1.1".into(),
                 cargo_llvm_cov: None,
                 coverage_py: None,
+                flutter: None,
             },
             vec![FileCoverage::new(
                 "src/lib.rs".into(),
@@ -323,6 +341,7 @@ mod tests {
                 badgers: "0.1.1".into(),
                 cargo_llvm_cov: None,
                 coverage_py: None,
+                flutter: None,
             },
             files,
         )

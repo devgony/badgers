@@ -24,6 +24,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub enum Language {
     Rust,
     Python,
+    Dart,
     Unknown,
 }
 
@@ -36,6 +37,7 @@ impl Language {
         {
             Some("rs") => Language::Rust,
             Some("py") => Language::Python,
+            Some("dart") => Language::Dart,
             _ => Language::Unknown,
         }
     }
@@ -115,6 +117,9 @@ pub struct ToolVersions {
     pub badgers: String,
     pub cargo_llvm_cov: Option<String>,
     pub coverage_py: Option<String>,
+    /// Flutter SDK version (additive field; absent in older snapshots).
+    #[serde(default)]
+    pub flutter: Option<String>,
 }
 
 /// Full coverage measurement for one commit.
@@ -213,6 +218,7 @@ mod tests {
                 badgers: "0.1.0".to_string(),
                 cargo_llvm_cov: None,
                 coverage_py: Some("7.6.1".to_string()),
+                flutter: None,
             },
             files,
         )
@@ -279,6 +285,7 @@ mod tests {
     fn language_from_path() {
         assert_eq!(Language::from_path("src/lib.rs"), Language::Rust);
         assert_eq!(Language::from_path("pkg/mod.py"), Language::Python);
+        assert_eq!(Language::from_path("lib/main.dart"), Language::Dart);
         assert_eq!(Language::from_path("README.md"), Language::Unknown);
         assert_eq!(Language::from_path("Makefile"), Language::Unknown);
     }

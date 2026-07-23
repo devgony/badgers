@@ -662,6 +662,7 @@ mod tests {
                 badgers: "0.1.1".into(),
                 cargo_llvm_cov: None,
                 coverage_py: Some("7.6".into()),
+                flutter: None,
             },
             vec![],
         )

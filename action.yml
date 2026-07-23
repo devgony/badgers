@@ -1,5 +1,5 @@
 name: Badgers PR Coverage
-description: PR line coverage reports for Python projects with diff annotations, comments, and durable history.
+description: PR line coverage reports for Python and Flutter projects with diff annotations, comments, and durable history.
 author: devgony
 branding:
   icon: activity
@@ -13,12 +13,19 @@ inputs:
       use 'latest', an exact vX.Y.Z tag, or 'source' to override that behavior.
     default: "auto"
   working-directory:
-    description: Directory containing the Python project (repo-relative)
+    description: Directory containing the project (repo-relative)
     default: "."
+  language:
+    description: >
+      Coverage collector to use. 'python' reads coverage.py data;
+      'flutter' reads the coverage/lcov.info written by
+      "flutter test --coverage".
+    default: "python"
   coverage-command:
     description: >
-      Command that runs the test suite under coverage.py
-      (e.g. "python -m coverage run -m unittest discover").
+      Command that runs the test suite under coverage
+      (e.g. "python -m coverage run -m unittest discover" or
+      "flutter test --coverage").
       Also executed at the merge-base checkout to build the PR baseline.
     required: true
   pages:
@@ -172,12 +179,21 @@ runs:
       working-directory: ${{ inputs.working-directory }}
       env:
         MARKDOWN_SUMMARY: ${{ inputs.markdown-summary }}
+        BADGERS_LANGUAGE: ${{ inputs.language }}
       run: |
-        badgers collect python --repo-root . -o coverage-snapshot.json \
+        set -euo pipefail
+        case "$BADGERS_LANGUAGE" in
+          python|flutter) ;;
+          *)
+            echo "::error::language must be 'python' or 'flutter'"
+            exit 1
+            ;;
+        esac
+        badgers collect "$BADGERS_LANGUAGE" --repo-root . -o coverage-snapshot.json \
           | tee badgers-summary.txt
         if [ "$MARKDOWN_SUMMARY" != "true" ]; then
           {
-            echo '### 🦡 Badgers Python Coverage'
+            echo '### 🦡 Badgers Coverage'
             echo '```'
             cat badgers-summary.txt
             echo '```'
@@ -294,8 +310,16 @@ runs:
         BADGERS_BASE_REF: ${{ github.base_ref }}
         BADGERS_COVERAGE_COMMAND: ${{ inputs.coverage-command }}
         BADGERS_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        BADGERS_LANGUAGE: ${{ inputs.language }}
       run: |
         set -euo pipefail
+        case "$BADGERS_LANGUAGE" in
+          python|flutter) ;;
+          *)
+            echo "::error::language must be 'python' or 'flutter'"
+            exit 1
+            ;;
+        esac
         git check-ref-format --branch "$BADGERS_BASE_REF" >/dev/null
         MERGE_BASE=$(git merge-base "origin/${BADGERS_BASE_REF}" HEAD)
         echo "merge-base: $MERGE_BASE"
@@ -304,7 +328,7 @@ runs:
         if [ -d "$BASE_DIR" ]; then
           cd "$BASE_DIR"
           bash -c "$BADGERS_COVERAGE_COMMAND"
-          badgers collect python --repo-root . -o /tmp/badgers-base-snapshot.json
+          badgers collect "$BADGERS_LANGUAGE" --repo-root . -o /tmp/badgers-base-snapshot.json
         else
           echo "::notice::working directory missing at merge-base; skipping baseline"
         fi

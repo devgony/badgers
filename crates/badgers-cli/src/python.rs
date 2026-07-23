@@ -65,6 +65,7 @@ pub fn run(args: &CollectPythonArgs) -> Result<()> {
             badgers: env!("CARGO_PKG_VERSION").to_string(),
             cargo_llvm_cov: None,
             coverage_py: coverage_py_version,
+            flutter: None,
         },
         outcome.files,
     );
@@ -77,7 +78,7 @@ pub fn run(args: &CollectPythonArgs) -> Result<()> {
     Ok(())
 }
 
-fn checkout_sha(repo_root: &Path) -> String {
+pub(crate) fn checkout_sha(repo_root: &Path) -> String {
     let output = Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(repo_root)

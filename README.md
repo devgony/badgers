@@ -1,6 +1,6 @@
 # Badgers
 
-Badgers is a coverage checker for Rust and Python projects. It keeps an eye on pull requests, compares each push against the base branch, and reports whether line coverage improved, dropped, or left changed lines uncovered.
+Badgers is a coverage checker for Rust, Python, and Flutter projects. It keeps an eye on pull requests, compares each push against the base branch, and reports whether line coverage improved, dropped, or left changed lines uncovered.
 
 ![Badgers logo](./images/logo-badgers.png)
 
@@ -56,7 +56,8 @@ badgers cov
 ```
 
 The `cov` command runs coverage in the working tree (`cargo llvm-cov` for
-Rust, `coverage.py` for Python, or a prebuilt file via `--lcov-file`), diffs
+Rust, `flutter test --coverage` for Flutter, `coverage.py` for Python, or a
+prebuilt file via `--lcov-file`), diffs
 the working tree against the pull request base, and prints the same compact
 format as `badgers diff`. It exits with code 1 while uncovered changed
 executable lines remain, so the loop is: read the stored diff once, add
@@ -122,6 +123,8 @@ Badgers uses proven ecosystem tools and normalizes their output into one coverag
 
 - Rust coverage via `cargo llvm-cov`
 - Python coverage via `coverage.py`
+- Flutter coverage via `flutter test --coverage` (set `language: flutter` in
+  the action)
 - Shared parsing through LCOV first, JSON later
 
 ## Storage
@@ -285,17 +288,39 @@ Install the CLI from the current checkout with:
 make install
 ```
 
+Before the first release, add a crates.io API token as the repository Actions
+secret `CARGO_REGISTRY_TOKEN`. The token must be authorized to publish all five
+`badge-rs*` packages. GitHub CLI must also be authenticated locally.
+
 Create a release from a clean, pushed `main` branch with:
 
 ```bash
-make release VERSION=1.2.3
+make release
 ```
 
-The release target checks formatting, runs the workspace tests and Clippy,
-publishes the GitHub Release that triggers binary packaging, and advances the
-stable major tag for non-prerelease versions. Versions containing a prerelease
-suffix such as `1.2.3-rc.1` are marked as prereleases and do not move the major
-tag.
+The prompt accepts `major`, `minor`, or `patch` (or `1`, `2`, or `3`). Automation
+can bypass the prompt with an exact named bump:
+
+```bash
+make release BUMP=patch
+```
+
+The release target rejects any mismatch between the workspace version, internal
+dependency pins, CLI manifest, and lockfile. It updates all of them, runs the
+Python tests, formatting check, workspace tests, and Clippy, then creates a
+version commit and annotated tag. The commit and immutable version tag are
+pushed atomically before the GitHub Release is published. Releases are stable
+semantic versions only; prerelease bumps are not supported. The moving `v1`,
+`v2`, and so on tag continues to advance after each release in that major line.
+
+Publishing the GitHub Release starts crate publication and four-platform binary
+packaging from the same `release.published` event. Crates are published in
+dependency order: `badge-rs-core`, `badge-rs-github`, `badge-rs-storage`,
+`badge-rs-lcov`, then `badge-rs`. The workflow waits for crates.io propagation,
+skips package versions that already exist when rerun, and replaces existing
+binary assets. crates.io publication and GitHub asset uploads are separate
+services and cannot be one atomic transaction; rerun the release workflow for
+the existing tag if either job fails.
 
 ## Status
 
