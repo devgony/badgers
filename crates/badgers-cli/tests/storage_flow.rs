@@ -304,6 +304,42 @@ fn push_rejects_comparison_sha_mismatch() {
 }
 
 #[test]
+fn push_rejects_unsupported_comparison_schema_versions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let snapshot = write_snapshot(tmp.path(), "actual");
+    let comparison = tmp.path().join("comparison.json");
+
+    for version in [0, 3] {
+        std::fs::write(
+            &comparison,
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": version,
+                "head_sha": "actual",
+                "base_sha": null,
+                "comparison": { "base_available": false, "files": [] }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        badgers()
+            .args(["snapshot", "push"])
+            .arg("--snapshot")
+            .arg(&snapshot)
+            .arg("--comparison")
+            .arg(&comparison)
+            .args(["--sha", "actual", "--committed-at", "2026-07-19T10:00:00Z"])
+            .arg("--local-dir")
+            .arg(tmp.path().join(format!("store-{version}")))
+            .args(["--repo", "owner/repo"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(format!(
+                "unsupported comparison schema version {version}"
+            )));
+    }
+}
+
+#[test]
 fn baseline_fetch_prefers_exact_then_pointer_then_none() {
     const SHA: &str = "a100000000000000000000000000000000000000";
     const MISSING_SHA: &str = "b100000000000000000000000000000000000000";

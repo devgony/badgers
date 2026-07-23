@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::Context;
 use badge_rs_core::CoverageSnapshot;
-use badge_rs_core::compare::{COMPARISON_SCHEMA_VERSION, ComparisonDocument};
+use badge_rs_core::compare::{ComparisonAnalysisDocument, is_supported_comparison_schema_version};
 use badge_rs_storage::{
     BranchPointer, POINTER_SCHEMA_VERSION, PointerUpdate, PutOptions, update_pointer_if_newer,
 };
@@ -82,10 +82,10 @@ pub fn run(args: &SnapshotPushArgs) -> anyhow::Result<()> {
     let comparison_key = if let Some(path) = &args.comparison {
         let json = std::fs::read(path)
             .with_context(|| format!("reading comparison {}", path.display()))?;
-        let comparison: ComparisonDocument = serde_json::from_slice(&json)
+        let comparison: ComparisonAnalysisDocument = serde_json::from_slice(&json)
             .with_context(|| format!("parsing comparison {}", path.display()))?;
         anyhow::ensure!(
-            comparison.schema_version == COMPARISON_SCHEMA_VERSION,
+            is_supported_comparison_schema_version(comparison.schema_version),
             "unsupported comparison schema version {}",
             comparison.schema_version
         );

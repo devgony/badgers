@@ -3,14 +3,14 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail, ensure};
-use badge_rs_core::compare::{COMPARISON_SCHEMA_VERSION, ComparisonDocument};
+use badge_rs_core::compare::{ComparisonAnalysisDocument, is_supported_comparison_schema_version};
 use clap::Args;
 
 use crate::github_storage::{
     DEFAULT_STORAGE_BRANCH, DEFAULT_STORAGE_PREFIX, GithubReportLocation, checked_repo_path,
     clone_storage_branch, read_pointer, resolve_source_repo,
 };
-use crate::render::render_comparison;
+use crate::render::render_comparison_analysis;
 
 const MAX_COMPARISON_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -92,7 +92,7 @@ fn read_comparison(
     head_sha: &str,
     comparison_key: Option<&str>,
     checkout: &Path,
-) -> Result<ComparisonDocument> {
+) -> Result<ComparisonAnalysisDocument> {
     let key = comparison_key.context(
         "the latest PR report does not contain a coverage comparison; enable GitHub repository storage and rerun coverage",
     )?;
@@ -119,10 +119,10 @@ fn read_comparison(
         "stored coverage comparison exceeds 64 MiB"
     );
 
-    let document: ComparisonDocument =
+    let document: ComparisonAnalysisDocument =
         serde_json::from_slice(&data).with_context(|| format!("parsing {}", path.display()))?;
     ensure!(
-        document.schema_version == COMPARISON_SCHEMA_VERSION,
+        is_supported_comparison_schema_version(document.schema_version),
         "unsupported comparison schema version {}",
         document.schema_version
     );
@@ -134,61 +134,66 @@ fn read_comparison(
     Ok(document)
 }
 
-fn render(pr: u64, document: &ComparisonDocument) -> String {
+fn render(pr: u64, document: &ComparisonAnalysisDocument) -> String {
     let short_sha = &document.head_sha[..document.head_sha.len().min(7)];
-    render_comparison(&format!("PR: #{pr} @ {short_sha}"), &document.comparison)
+    render_comparison_analysis(&format!("PR: #{pr} @ {short_sha}"), &document.comparison)
 }
 
 #[cfg(test)]
 mod tests {
-    use badge_rs_core::compare::{Comparison, Counts, DiffCoverage, FileDelta};
+    use badge_rs_core::compare::{
+        COMPARISON_SCHEMA_VERSION, Comparison, ComparisonAnalysis, Counts, DiffCoverage, FileDelta,
+    };
 
     use super::*;
     use crate::render::escape_path;
 
     const HEAD_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 
-    fn document() -> ComparisonDocument {
-        ComparisonDocument {
+    fn document() -> ComparisonAnalysisDocument {
+        ComparisonAnalysisDocument {
             schema_version: COMPARISON_SCHEMA_VERSION,
             head_sha: HEAD_SHA.into(),
             base_sha: Some("89abcdef0123456789abcdef0123456789abcdef".into()),
-            comparison: Comparison {
-                base_available: true,
-                files: vec![
-                    FileDelta {
-                        path: "src/store.rs".into(),
-                        base: Some(Counts {
-                            covered: 2,
-                            executable: 2,
-                        }),
-                        head: Some(Counts {
-                            covered: 1,
-                            executable: 2,
-                        }),
-                        diff: DiffCoverage {
-                            relevant: 1,
-                            covered: 0,
-                            uncovered_lines: vec![91],
+            comparison: ComparisonAnalysis {
+                comparison: Comparison {
+                    base_available: true,
+                    files: vec![
+                        FileDelta {
+                            path: "src/store.rs".into(),
+                            base: Some(Counts {
+                                covered: 2,
+                                executable: 2,
+                            }),
+                            head: Some(Counts {
+                                covered: 1,
+                                executable: 2,
+                            }),
+                            diff: DiffCoverage {
+                                relevant: 1,
+                                covered: 0,
+                                uncovered_lines: vec![91],
+                            },
                         },
-                    },
-                    FileDelta {
-                        path: "src/parser.rs".into(),
-                        base: Some(Counts {
-                            covered: 1,
-                            executable: 1,
-                        }),
-                        head: Some(Counts {
-                            covered: 1,
-                            executable: 3,
-                        }),
-                        diff: DiffCoverage {
-                            relevant: 3,
-                            covered: 1,
-                            uncovered_lines: vec![48, 42, 47, 47],
+                        FileDelta {
+                            path: "src/parser.rs".into(),
+                            base: Some(Counts {
+                                covered: 1,
+                                executable: 1,
+                            }),
+                            head: Some(Counts {
+                                covered: 1,
+                                executable: 3,
+                            }),
+                            diff: DiffCoverage {
+                                relevant: 3,
+                                covered: 1,
+                                uncovered_lines: vec![48, 42, 47, 47],
+                            },
                         },
-                    },
-                ],
+                    ],
+                },
+                scope_change: Default::default(),
             },
         }
     }
@@ -257,5 +262,77 @@ Changed-line coverage: n/a (0/0)\n"
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn reads_legacy_schema_without_scope_and_rejects_unsupported_versions() {
+        let temp = tempfile::tempdir().unwrap();
+        let location = GithubReportLocation::new(
+            "owner/project",
+            "owner/project",
+            DEFAULT_STORAGE_BRANCH,
+            DEFAULT_STORAGE_PREFIX,
+        )
+        .unwrap();
+        let key = location.comparison_path(HEAD_SHA).unwrap();
+        let path = temp.path().join(&key);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut value = serde_json::json!({
+            "schema_version": 1,
+            "head_sha": HEAD_SHA,
+            "base_sha": null,
+            "comparison": { "base_available": false, "files": [] }
+        });
+        write_compressed_json(&path, &value);
+
+        let legacy = read_comparison(&location, HEAD_SHA, Some(&key), temp.path()).unwrap();
+        assert_eq!(legacy.schema_version, 1);
+        assert!(!legacy.comparison.scope_changed());
+
+        for version in [0, COMPARISON_SCHEMA_VERSION + 1] {
+            value["schema_version"] = version.into();
+            write_compressed_json(&path, &value);
+            let error = read_comparison(&location, HEAD_SHA, Some(&key), temp.path())
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(&format!("unsupported comparison schema version {version}")),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    fn write_compressed_json(path: &Path, value: &serde_json::Value) {
+        let json = serde_json::to_vec(value).unwrap();
+        std::fs::write(path, zstd::encode_all(json.as_slice(), 3).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn persisted_scope_change_is_explained_in_terminal_output() {
+        let mut document = document();
+        document.comparison.scope_change.appeared = vec!["src/newly_measured.rs".into()];
+        document.comparison.scope_change.disappeared = vec!["src/no_longer_measured.rs".into()];
+
+        let output = render(547, &document);
+
+        assert!(output.contains("Total coverage: 40.00% (coverage scope changed)"));
+        assert!(output.contains("Coverage scope changed; aggregate delta suppressed"));
+        assert!(output.contains("appeared: src/newly_measured.rs"));
+        assert!(output.contains("disappeared: src/no_longer_measured.rs"));
+    }
+
+    #[test]
+    fn terminal_scope_paths_are_escaped_and_bounded() {
+        let mut document = document();
+        document.comparison.scope_change.appeared = (0..=100)
+            .map(|index| format!("scope/{index:03}.rs"))
+            .collect();
+        document.comparison.scope_change.appeared[0] = "scope/\ncontrol::error.rs".into();
+
+        let output = render(547, &document);
+
+        assert!(output.contains("appeared: scope/\\ncontrol::error.rs"));
+        assert!(output.contains("... and 1 more"));
+        assert!(!output.contains("scope/100.rs"));
     }
 }
