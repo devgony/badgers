@@ -4,7 +4,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{CoverageSnapshot, FileCoverage, coverage_pct};
 
-pub const COMPARISON_SCHEMA_VERSION: u32 = 1;
+pub const COMPARISON_SCHEMA_VERSION: u32 = 2;
+
+pub fn is_supported_comparison_schema_version(version: u32) -> bool {
+    (1..=COMPARISON_SCHEMA_VERSION).contains(&version)
+}
 
 /// Changed (added/modified) line numbers per repo-relative path, as produced
 /// by parsing a unified git diff of base...head.
@@ -68,10 +72,61 @@ impl FileDelta {
     }
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CoverageScopeChange {
+    /// Files newly included in coverage despite already existing in the base tree.
+    pub appeared: Vec<String>,
+    /// Files omitted from head coverage despite still existing in the head tree.
+    pub disappeared: Vec<String>,
+}
+
+impl CoverageScopeChange {
+    pub fn is_empty(&self) -> bool {
+        self.appeared.is_empty() && self.disappeared.is_empty()
+    }
+
+    pub fn affected_entries(&self) -> Vec<CoverageScopeEntry<'_>> {
+        let appeared: BTreeSet<&str> = self.appeared.iter().map(String::as_str).collect();
+        let disappeared: BTreeSet<&str> = self.disappeared.iter().map(String::as_str).collect();
+        appeared
+            .into_iter()
+            .map(|path| CoverageScopeEntry {
+                kind: CoverageScopeChangeKind::Appeared,
+                path,
+            })
+            .chain(disappeared.into_iter().map(|path| CoverageScopeEntry {
+                kind: CoverageScopeChangeKind::Disappeared,
+                path,
+            }))
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoverageScopeChangeKind {
+    Appeared,
+    Disappeared,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoverageScopeEntry<'a> {
+    pub kind: CoverageScopeChangeKind,
+    pub path: &'a str,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Comparison {
     pub base_available: bool,
     pub files: Vec<FileDelta>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComparisonAnalysis {
+    #[serde(flatten)]
+    pub comparison: Comparison,
+    #[serde(default, skip_serializing_if = "CoverageScopeChange::is_empty")]
+    pub scope_change: CoverageScopeChange,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +135,14 @@ pub struct ComparisonDocument {
     pub head_sha: String,
     pub base_sha: Option<String>,
     pub comparison: Comparison,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComparisonAnalysisDocument {
+    pub schema_version: u32,
+    pub head_sha: String,
+    pub base_sha: Option<String>,
+    pub comparison: ComparisonAnalysis,
 }
 
 impl Comparison {
@@ -112,6 +175,62 @@ impl Comparison {
     }
 }
 
+impl ComparisonAnalysis {
+    pub fn new(comparison: Comparison) -> Self {
+        Self {
+            comparison,
+            scope_change: CoverageScopeChange::default(),
+        }
+    }
+
+    pub fn head_totals(&self) -> Counts {
+        self.comparison.head_totals()
+    }
+
+    pub fn base_totals(&self) -> Counts {
+        self.comparison.base_totals()
+    }
+
+    pub fn delta_pct(&self) -> Option<f64> {
+        if self.scope_changed() {
+            return None;
+        }
+        self.comparison.delta_pct()
+    }
+
+    pub fn diff_totals(&self) -> DiffCoverage {
+        self.comparison.diff_totals()
+    }
+
+    pub fn scope_changed(&self) -> bool {
+        !self.scope_change.is_empty()
+    }
+
+    pub fn affected_entries(&self) -> Vec<CoverageScopeEntry<'_>> {
+        self.scope_change.affected_entries()
+    }
+}
+
+impl From<Comparison> for ComparisonAnalysis {
+    fn from(comparison: Comparison) -> Self {
+        Self::new(comparison)
+    }
+}
+
+impl std::ops::Deref for ComparisonAnalysis {
+    type Target = Comparison;
+
+    fn deref(&self) -> &Self::Target {
+        &self.comparison
+    }
+}
+
+impl std::ops::DerefMut for ComparisonAnalysis {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.comparison
+    }
+}
+
 fn accumulate(counts: impl Iterator<Item = Counts>) -> Counts {
     counts.fold(
         Counts {
@@ -126,6 +245,37 @@ fn accumulate(counts: impl Iterator<Item = Counts>) -> Counts {
 }
 
 pub fn compare(
+    base: Option<&CoverageSnapshot>,
+    head: &CoverageSnapshot,
+    changed: &ChangedLines,
+) -> Comparison {
+    build_comparison(base, head, changed)
+}
+
+/// Compares snapshots and detects coverage-scope drift when both corresponding
+/// Git tree file sets are available. Tree checks are ignored without a base
+/// snapshot or when either tree is unavailable.
+pub fn compare_with_source_trees(
+    base: Option<&CoverageSnapshot>,
+    head: &CoverageSnapshot,
+    changed: &ChangedLines,
+    base_tree: Option<&BTreeSet<String>>,
+    head_tree: Option<&BTreeSet<String>>,
+) -> ComparisonAnalysis {
+    let comparison = build_comparison(base, head, changed);
+    let scope_change = match (base, base_tree, head_tree) {
+        (Some(base), Some(base_tree), Some(head_tree)) => {
+            detect_scope_change(base, head, base_tree, head_tree)
+        }
+        _ => CoverageScopeChange::default(),
+    };
+    ComparisonAnalysis {
+        comparison,
+        scope_change,
+    }
+}
+
+fn build_comparison(
     base: Option<&CoverageSnapshot>,
     head: &CoverageSnapshot,
     changed: &ChangedLines,
@@ -174,6 +324,32 @@ pub fn compare(
     Comparison {
         base_available: base.is_some(),
         files,
+    }
+}
+
+fn detect_scope_change(
+    base: &CoverageSnapshot,
+    head: &CoverageSnapshot,
+    base_tree: &BTreeSet<String>,
+    head_tree: &BTreeSet<String>,
+) -> CoverageScopeChange {
+    let base_snapshot: BTreeSet<&str> = base.files.iter().map(|file| file.path.as_str()).collect();
+    let head_snapshot: BTreeSet<&str> = head.files.iter().map(|file| file.path.as_str()).collect();
+
+    let appeared = head_snapshot
+        .difference(&base_snapshot)
+        .filter(|path| base_tree.contains(**path) && head_tree.contains(**path))
+        .map(|path| (*path).to_string())
+        .collect();
+    let disappeared = base_snapshot
+        .difference(&head_snapshot)
+        .filter(|path| base_tree.contains(**path) && head_tree.contains(**path))
+        .map(|path| (*path).to_string())
+        .collect();
+
+    CoverageScopeChange {
+        appeared,
+        disappeared,
     }
 }
 
@@ -300,5 +476,173 @@ mod tests {
         let json = serde_json::to_vec_pretty(&document).unwrap();
         let decoded: ComparisonDocument = serde_json::from_slice(&json).unwrap();
         assert_eq!(decoded, document);
+    }
+
+    #[test]
+    fn analysis_document_preserves_wire_shape_and_document_compatibility() {
+        let comparison = compare(None, &snapshot(vec![]), &ChangedLines::default());
+        let document = ComparisonAnalysisDocument {
+            schema_version: COMPARISON_SCHEMA_VERSION,
+            head_sha: "abc123".into(),
+            base_sha: Some("base123".into()),
+            comparison: ComparisonAnalysis {
+                comparison: comparison.clone(),
+                scope_change: CoverageScopeChange {
+                    appeared: vec!["appeared.py".into()],
+                    disappeared: vec![],
+                },
+            },
+        };
+
+        let json = serde_json::to_vec(&document).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&json).unwrap();
+        assert!(value["comparison"]["files"].is_array());
+        assert_eq!(
+            value["comparison"]["scope_change"]["appeared"][0],
+            "appeared.py"
+        );
+
+        let old_reader: ComparisonDocument = serde_json::from_slice(&json).unwrap();
+        assert_eq!(old_reader.comparison, comparison);
+
+        let old_reader = ComparisonDocument {
+            schema_version: 1,
+            ..old_reader
+        };
+        let old_json = serde_json::to_vec(&old_reader).unwrap();
+        let new_reader: ComparisonAnalysisDocument = serde_json::from_slice(&old_json).unwrap();
+        assert_eq!(new_reader.schema_version, 1);
+        assert!(!new_reader.comparison.scope_changed());
+        assert_eq!(new_reader.comparison.comparison, comparison);
+    }
+
+    #[test]
+    fn comparison_schema_supports_legacy_and_current_versions_only() {
+        assert!(!is_supported_comparison_schema_version(0));
+        assert!(is_supported_comparison_schema_version(1));
+        assert!(is_supported_comparison_schema_version(
+            COMPARISON_SCHEMA_VERSION
+        ));
+        assert!(!is_supported_comparison_schema_version(
+            COMPARISON_SCHEMA_VERSION + 1
+        ));
+    }
+
+    #[test]
+    fn detects_scope_expansion_and_contraction_from_snapshot_and_tree_sets() {
+        let base = snapshot(vec![
+            file("steady.py", &[(1, 1)]),
+            file("disappeared.py", &[(1, 1)]),
+        ]);
+        let head = snapshot(vec![
+            file("steady.py", &[(1, 1)]),
+            file("appeared.py", &[(1, 0)]),
+        ]);
+        let base_tree = BTreeSet::from([
+            "appeared.py".to_string(),
+            "disappeared.py".to_string(),
+            "steady.py".to_string(),
+        ]);
+        let head_tree = base_tree.clone();
+
+        let comparison = compare_with_source_trees(
+            Some(&base),
+            &head,
+            &ChangedLines::default(),
+            Some(&base_tree),
+            Some(&head_tree),
+        );
+
+        assert_eq!(comparison.scope_change.appeared, vec!["appeared.py"]);
+        assert_eq!(comparison.scope_change.disappeared, vec!["disappeared.py"]);
+        assert!(comparison.scope_changed());
+        assert_eq!(comparison.delta_pct(), None);
+        assert_eq!(
+            comparison
+                .files
+                .iter()
+                .find(|file| file.path == "steady.py")
+                .unwrap()
+                .delta_pct(),
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn ignores_real_additions_deletions_and_renames_when_detecting_scope_changes() {
+        let base = snapshot(vec![
+            file("deleted.py", &[(1, 1)]),
+            file("old_name.py", &[(1, 1)]),
+        ]);
+        let head = snapshot(vec![
+            file("added.py", &[(1, 1)]),
+            file("new_name.py", &[(1, 1)]),
+        ]);
+        let base_tree = BTreeSet::from(["deleted.py".to_string(), "old_name.py".to_string()]);
+        let head_tree = BTreeSet::from(["added.py".to_string(), "new_name.py".to_string()]);
+
+        let comparison = compare_with_source_trees(
+            Some(&base),
+            &head,
+            &ChangedLines::default(),
+            Some(&base_tree),
+            Some(&head_tree),
+        );
+
+        assert!(!comparison.scope_changed());
+        assert!(comparison.delta_pct().is_some());
+    }
+
+    #[test]
+    fn ignores_scope_candidates_without_the_same_path_in_both_trees() {
+        let base = snapshot(vec![file("base_only.py", &[(1, 1)])]);
+        let head = snapshot(vec![file("head_only.py", &[(1, 1)])]);
+        let base_tree = BTreeSet::from(["head_only.py".to_string()]);
+        let head_tree = BTreeSet::from(["base_only.py".to_string()]);
+
+        let comparison = compare_with_source_trees(
+            Some(&base),
+            &head,
+            &ChangedLines::default(),
+            Some(&base_tree),
+            Some(&head_tree),
+        );
+
+        assert!(!comparison.scope_changed());
+        assert!(comparison.scope_change.appeared.is_empty());
+        assert!(comparison.scope_change.disappeared.is_empty());
+    }
+
+    #[test]
+    fn old_comparison_json_defaults_to_unchanged_scope() {
+        let comparison: ComparisonAnalysis =
+            serde_json::from_str(r#"{"base_available":true,"files":[]}"#).unwrap();
+
+        assert!(!comparison.scope_changed());
+        assert!(comparison.scope_change.appeared.is_empty());
+        assert!(comparison.scope_change.disappeared.is_empty());
+    }
+
+    #[test]
+    fn affected_scope_entries_are_sorted_and_deduplicated() {
+        let scope = CoverageScopeChange {
+            appeared: vec!["z.py".into(), "a.py".into(), "a.py".into()],
+            disappeared: vec!["d.py".into(), "c.py".into(), "c.py".into()],
+        };
+
+        let entries: Vec<_> = scope
+            .affected_entries()
+            .into_iter()
+            .map(|entry| (entry.kind, entry.path))
+            .collect();
+        assert_eq!(
+            entries,
+            vec![
+                (CoverageScopeChangeKind::Appeared, "a.py"),
+                (CoverageScopeChangeKind::Appeared, "z.py"),
+                (CoverageScopeChangeKind::Disappeared, "c.py"),
+                (CoverageScopeChangeKind::Disappeared, "d.py"),
+            ]
+        );
     }
 }
