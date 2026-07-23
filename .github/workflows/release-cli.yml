@@ -1,4 +1,4 @@
-name: Release CLI binaries
+name: Release crates and CLI binaries
 
 on:
   release:
@@ -14,8 +14,133 @@ permissions:
   contents: write
 
 jobs:
+  validate:
+    name: Validate immutable release source
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      sha: ${{ steps.release.outputs.sha }}
+    env:
+      REQUESTED_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release tag to commit
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$REQUESTED_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "error: release tag must be a stable semantic version, got $REQUESTED_TAG" >&2
+            exit 1
+          fi
+
+          RELEASE_TAG=$(gh release view "$REQUESTED_TAG" --json tagName --jq .tagName)
+          if [[ "$RELEASE_TAG" != "$REQUESTED_TAG" ]]; then
+            echo "error: GitHub Release resolved as $RELEASE_TAG, expected $REQUESTED_TAG" >&2
+            exit 1
+          fi
+
+          git fetch --force --no-tags origin \
+            "refs/tags/$REQUESTED_TAG:refs/tags/$REQUESTED_TAG"
+          SHA=$(git rev-parse "refs/tags/$REQUESTED_TAG^{commit}")
+          git checkout --detach "$SHA"
+
+          VERSION=$(python3 scripts/release_version.py current)
+          if [[ "$REQUESTED_TAG" != "v$VERSION" ]]; then
+            echo "error: release tag $REQUESTED_TAG does not match workspace version $VERSION" >&2
+            exit 1
+          fi
+
+          echo "tag=$REQUESTED_TAG" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+  publish-crates:
+    name: Publish crates.io packages
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      BADGERS_RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+
+      - name: Publish workspace packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${CARGO_REGISTRY_TOKEN:-}" ]]; then
+            echo 'error: repository secret CARGO_REGISTRY_TOKEN is required to publish crates' >&2
+            exit 1
+          fi
+
+          VERSION=$(python3 scripts/release_version.py current)
+          if [[ "$BADGERS_RELEASE_TAG" != "v$VERSION" ]]; then
+            echo "error: release tag $BADGERS_RELEASE_TAG does not match workspace version $VERSION" >&2
+            exit 1
+          fi
+
+          crate_available() {
+            local crate=$1
+            curl --fail --silent --show-error \
+              --header 'User-Agent: badgers-release-workflow' \
+              "https://crates.io/api/v1/crates/${crate}/${VERSION}" >/dev/null 2>&1
+          }
+
+          wait_for_crate() {
+            local crate=$1
+            local check
+            for check in {1..30}; do
+              if crate_available "$crate"; then
+                return 0
+              fi
+              sleep 10
+            done
+            return 1
+          }
+
+          publish_crate() {
+            local crate=$1
+            local attempt
+            if crate_available "$crate"; then
+              echo "$crate $VERSION is already published; skipping"
+              return 0
+            fi
+            for attempt in {1..10}; do
+              echo "Publishing $crate $VERSION (attempt $attempt/10)"
+              if cargo publish --locked --package "$crate"; then
+                wait_for_crate "$crate" || {
+                  echo "error: $crate $VERSION was not visible on crates.io after publication" >&2
+                  return 1
+                }
+                return 0
+              fi
+              if crate_available "$crate"; then
+                echo "$crate $VERSION became available after cargo reported an error"
+                return 0
+              fi
+              if [[ $attempt -lt 10 ]]; then
+                echo 'Waiting for crates.io index propagation before retrying'
+                sleep 30
+              fi
+            done
+            echo "error: failed to publish $crate $VERSION" >&2
+            return 1
+          }
+
+          publish_crate badge-rs-core
+          publish_crate badge-rs-github
+          publish_crate badge-rs-storage
+          publish_crate badge-rs-lcov
+          publish_crate badge-rs
+
   build:
     name: Build ${{ matrix.target }}
+    needs: validate
     strategy:
       fail-fast: false
       matrix:
@@ -30,13 +155,13 @@ jobs:
             target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.runner }}
     env:
-      BADGERS_RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      BADGERS_RELEASE_TAG: ${{ needs.validate.outputs.tag }}
       BADGERS_TARGET: ${{ matrix.target }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.BADGERS_RELEASE_TAG }}
+          ref: ${{ needs.validate.outputs.sha }}
 
       - name: Build release binary
         shell: bash
@@ -64,15 +189,15 @@ jobs:
 
   installer:
     name: Upload shell installer
-    needs: build
+    needs: [validate, build]
     runs-on: ubuntu-24.04
     env:
-      BADGERS_RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      BADGERS_RELEASE_TAG: ${{ needs.validate.outputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.BADGERS_RELEASE_TAG }}
+          ref: ${{ needs.validate.outputs.sha }}
 
       - name: Upload installer
         shell: bash
