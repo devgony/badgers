@@ -47,8 +47,9 @@ github_release_exists() {
 
 create_release_reconciled() {
   local tag=$1
+  # No --target: the tag already exists on origin at this point, so GitHub
+  # attaches the release to it. target_commitish rejects tag names (HTTP 422).
   if gh release create "$tag" \
-    --target "$tag" \
     --title "$tag" \
     --generate-notes; then
     return 0
