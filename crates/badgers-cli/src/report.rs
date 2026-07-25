@@ -770,7 +770,6 @@ mod tests {
                 badgers: "1.2.0".into(),
                 cargo_llvm_cov: None,
                 coverage_py: None,
-                flutter: None,
             },
             vec![],
         );
@@ -998,7 +997,6 @@ mod tests {
                 badgers: "1.2.0".into(),
                 cargo_llvm_cov: None,
                 coverage_py: None,
-                flutter: None,
             },
             files,
         )

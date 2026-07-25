@@ -1,5 +1,5 @@
 name: Badgers PR Coverage
-description: PR line coverage reports for Python and Flutter projects with diff annotations, comments, and durable history.
+description: PR line coverage reports for any LCOV-producing test tool, with diff annotations, comments, and durable history.
 author: devgony
 branding:
   icon: activity
@@ -15,19 +15,18 @@ inputs:
   working-directory:
     description: Directory containing the project (repo-relative)
     default: "."
-  language:
-    description: >
-      Coverage collector to use. 'python' reads coverage.py data;
-      'flutter' reads the coverage/lcov.info written by
-      "flutter test --coverage".
-    default: "python"
   coverage-command:
     description: >
-      Command that runs the test suite under coverage
-      (e.g. "python -m coverage run -m unittest discover" or
-      "flutter test --coverage").
+      Command that runs the test suite and writes the LCOV file named by
+      lcov-file (e.g. "cargo llvm-cov --workspace --lcov --output-path
+      coverage/lcov.info", "flutter test --coverage", or "python -m coverage
+      run -m pytest && python -m coverage lcov -o coverage/lcov.info").
       Also executed at the merge-base checkout to build the PR baseline.
     required: true
+  lcov-file:
+    description: >
+      LCOV file written by coverage-command, relative to working-directory.
+    default: "coverage/lcov.info"
   pages:
     description: Deploy the HTML report to GitHub Pages (gh-pages branch)
     default: "false"
@@ -179,17 +178,15 @@ runs:
       working-directory: ${{ inputs.working-directory }}
       env:
         MARKDOWN_SUMMARY: ${{ inputs.markdown-summary }}
-        BADGERS_LANGUAGE: ${{ inputs.language }}
+        BADGERS_LCOV_FILE: ${{ inputs.lcov-file }}
       run: |
         set -euo pipefail
-        case "$BADGERS_LANGUAGE" in
-          python|flutter) ;;
-          *)
-            echo "::error::language must be 'python' or 'flutter'"
-            exit 1
-            ;;
-        esac
-        badgers collect "$BADGERS_LANGUAGE" --repo-root . -o coverage-snapshot.json \
+        if [ -z "$BADGERS_LCOV_FILE" ]; then
+          echo "::error::lcov-file must not be empty"
+          exit 1
+        fi
+        badgers collect lcov --lcov-file "$BADGERS_LCOV_FILE" \
+          --repo-root . -o coverage-snapshot.json \
           | tee badgers-summary.txt
         if [ "$MARKDOWN_SUMMARY" != "true" ]; then
           {
@@ -310,16 +307,13 @@ runs:
         BADGERS_BASE_REF: ${{ github.base_ref }}
         BADGERS_COVERAGE_COMMAND: ${{ inputs.coverage-command }}
         BADGERS_WORKING_DIRECTORY: ${{ inputs.working-directory }}
-        BADGERS_LANGUAGE: ${{ inputs.language }}
+        BADGERS_LCOV_FILE: ${{ inputs.lcov-file }}
       run: |
         set -euo pipefail
-        case "$BADGERS_LANGUAGE" in
-          python|flutter) ;;
-          *)
-            echo "::error::language must be 'python' or 'flutter'"
-            exit 1
-            ;;
-        esac
+        if [ -z "$BADGERS_LCOV_FILE" ]; then
+          echo "::error::lcov-file must not be empty"
+          exit 1
+        fi
         git check-ref-format --branch "$BADGERS_BASE_REF" >/dev/null
         MERGE_BASE=$(git merge-base "origin/${BADGERS_BASE_REF}" HEAD)
         echo "merge-base: $MERGE_BASE"
@@ -328,7 +322,8 @@ runs:
         if [ -d "$BASE_DIR" ]; then
           cd "$BASE_DIR"
           bash -c "$BADGERS_COVERAGE_COMMAND"
-          badgers collect "$BADGERS_LANGUAGE" --repo-root . -o /tmp/badgers-base-snapshot.json
+          badgers collect lcov --lcov-file "$BADGERS_LCOV_FILE" \
+            --repo-root . -o /tmp/badgers-base-snapshot.json
         else
           echo "::notice::working directory missing at merge-base; skipping baseline"
         fi

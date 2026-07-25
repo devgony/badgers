@@ -1,6 +1,6 @@
 # Badgers
 
-Badgers is a coverage checker for Rust, Python, and Flutter projects. It keeps an eye on pull requests, compares each push against the base branch, and reports whether line coverage improved, dropped, or left changed lines uncovered.
+Badgers is a coverage checker for any test tool that produces LCOV. Run your own coverage command - `cargo llvm-cov`, `coverage.py`, `flutter test --coverage`, or anything else that writes an LCOV file - and Badgers keeps an eye on pull requests, compares each push against the base branch, and reports whether line coverage improved, dropped, or left changed lines uncovered.
 
 ![Badgers logo](./images/logo-badgers.png)
 
@@ -117,15 +117,19 @@ source.
 - Uses Google Cloud Storage as the default backend.
 - Runs as a GitHub Action, with the core implementation written in Rust.
 
-## Language Support
+## Bring Your Own Coverage Tool
 
-Badgers uses proven ecosystem tools and normalizes their output into one coverage model:
+Badgers does not run language-specific collectors. You choose the test
+tooling; Badgers consumes the LCOV file it writes and normalizes it into one
+coverage model. Any toolchain works as long as it produces LCOV:
 
-- Rust coverage via `cargo llvm-cov`
-- Python coverage via `coverage.py`
-- Flutter coverage via `flutter test --coverage` (set `language: flutter` in
-  the action)
-- Shared parsing through LCOV first, JSON later
+- Rust: `cargo llvm-cov --workspace --lcov --output-path coverage/lcov.info`
+- Python: `coverage run -m pytest && coverage lcov -o coverage/lcov.info`
+- Flutter: `flutter test --coverage`
+- Anything else: point `lcov-file` at the file your tool writes
+
+Ready-to-copy workflow files for Rust, Python, and Flutter live in
+[`examples/workflows/`](./examples/workflows).
 
 ## Storage
 
@@ -168,12 +172,20 @@ steps:
 
   - uses: devgony/badgers@v1
     with:
+      coverage-command: >-
+        cargo llvm-cov --workspace --lcov --output-path coverage/lcov.info
+      lcov-file: coverage/lcov.info
       gcs-bucket: company-coverage
       gcs-prefix: badgers/repos/jubilee-works/timetree-planner-server
       github-storage-repo: jubilee-works/coverage-reports
       github-storage-token: ${{ secrets.BADGERS_STORAGE_TOKEN }}
       markdown-summary: true
 ```
+
+`coverage-command` is any shell command that runs your tests and writes the
+LCOV file named by `lcov-file` (default `coverage/lcov.info`). The same
+command rebuilds the baseline at the merge-base checkout when no stored
+snapshot is available.
 
 `cli-version` defaults to `auto`: `@v1` selects the newest stable `v1.x.y`
 release containing binaries for the current runner, while an exact Action ref

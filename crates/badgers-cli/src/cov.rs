@@ -210,7 +210,6 @@ fn head_snapshot(args: &CovArgs, repo_root: &Path) -> Result<CoverageSnapshot> {
             badgers: env!("CARGO_PKG_VERSION").to_string(),
             cargo_llvm_cov: None,
             coverage_py: None,
-            flutter: None,
         },
         outcome.files,
     ))
@@ -315,7 +314,6 @@ mod tests {
                 badgers: "0.1.1".into(),
                 cargo_llvm_cov: None,
                 coverage_py: None,
-                flutter: None,
             },
             vec![FileCoverage::new(
                 "src/lib.rs".into(),
@@ -341,7 +339,6 @@ mod tests {
                 badgers: "0.1.1".into(),
                 cargo_llvm_cov: None,
                 coverage_py: None,
-                flutter: None,
             },
             files,
         )

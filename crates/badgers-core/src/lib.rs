@@ -117,9 +117,6 @@ pub struct ToolVersions {
     pub badgers: String,
     pub cargo_llvm_cov: Option<String>,
     pub coverage_py: Option<String>,
-    /// Flutter SDK version (additive field; absent in older snapshots).
-    #[serde(default)]
-    pub flutter: Option<String>,
 }
 
 /// Full coverage measurement for one commit.
@@ -218,7 +215,6 @@ mod tests {
                 badgers: "0.1.0".to_string(),
                 cargo_llvm_cov: None,
                 coverage_py: Some("7.6.1".to_string()),
-                flutter: None,
             },
             files,
         )

@@ -1,20 +1,27 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 
-fn fixture_path() -> &'static str {
+fn python_fixture() -> &'static str {
     concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/python_basic.lcov"
     )
 }
 
+fn flutter_fixture() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/flutter_basic.lcov"
+    )
+}
+
 #[test]
-fn collect_python_from_lcov_fixture_writes_snapshot() {
-    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("snapshot.json");
+fn collect_lcov_from_python_fixture_writes_snapshot() {
+    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("python-snapshot.json");
 
     Command::cargo_bin("badgers")
         .unwrap()
-        .args(["collect", "python", "--lcov-file", fixture_path()])
+        .args(["collect", "lcov", "--lcov-file", python_fixture()])
         .args(["--repo-root", "."])
         .arg("-o")
         .arg(&out)
@@ -38,13 +45,60 @@ fn collect_python_from_lcov_fixture_writes_snapshot() {
 }
 
 #[test]
-fn collect_python_missing_lcov_file_fails_with_code_1() {
+fn collect_lcov_classifies_dart_files() {
+    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("flutter-snapshot.json");
+
     Command::cargo_bin("badgers")
         .unwrap()
-        .args(["collect", "python", "--lcov-file", "does-not-exist.lcov"])
+        .args(["collect", "lcov", "--lcov-file", flutter_fixture()])
+        .args(["--repo-root", "."])
+        .arg("-o")
+        .arg(&out)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("lib/app.dart"));
+
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(json["files"][0]["path"], "lib/app.dart");
+    assert_eq!(json["files"][0]["language"], "dart");
+}
+
+#[test]
+fn collect_lcov_defaults_to_coverage_lcov_info() {
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::create_dir(repo.path().join("coverage")).unwrap();
+    std::fs::copy(flutter_fixture(), repo.path().join("coverage/lcov.info")).unwrap();
+    let out = repo.path().join("snapshot.json");
+
+    Command::cargo_bin("badgers")
+        .unwrap()
+        .args(["collect", "lcov"])
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("-o")
+        .arg(&out)
+        .current_dir(repo.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("lib/app.dart"));
+
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(json["files"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn collect_lcov_missing_file_fails_with_code_1() {
+    Command::cargo_bin("badgers")
+        .unwrap()
+        .args(["collect", "lcov", "--lcov-file", "does-not-exist.lcov"])
         .assert()
         .code(1)
-        .stderr(predicate::str::contains("failed to read LCOV file"));
+        .stderr(predicate::str::contains("failed to read LCOV file"))
+        .stderr(predicate::str::contains(
+            "did your coverage command write it?",
+        ));
 }
 
 #[test]
@@ -89,7 +143,7 @@ fn collect_prefers_checked_out_commit_over_github_merge_sha() {
 
     Command::cargo_bin("badgers")
         .unwrap()
-        .args(["collect", "python", "--lcov-file", fixture_path()])
+        .args(["collect", "lcov", "--lcov-file", python_fixture()])
         .arg("--repo-root")
         .arg(repo.path())
         .arg("--output")

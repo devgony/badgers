@@ -1,9 +1,8 @@
 mod baseline_fetch;
+mod collect_lcov;
 mod cov;
 mod diff;
-mod flutter;
 mod github_storage;
-mod python;
 mod render;
 mod report;
 mod report_github;
@@ -21,7 +20,7 @@ use std::process::ExitCode;
 #[command(
     name = "badgers",
     version,
-    about = "Coverage checker for Rust, Python, and Flutter projects"
+    about = "PR coverage checker for any test tool that produces LCOV"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -55,8 +54,7 @@ pub enum SetupCommand {
 
 #[derive(Subcommand)]
 pub enum CollectCommand {
-    Python(python::CollectPythonArgs),
-    Flutter(flutter::CollectFlutterArgs),
+    Lcov(collect_lcov::CollectLcovArgs),
 }
 
 #[derive(Subcommand)]
@@ -78,8 +76,7 @@ pub enum BaselineCommand {
 
 pub fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     match cli.command {
-        Command::Collect(CollectCommand::Python(args)) => success(python::run(&args)),
-        Command::Collect(CollectCommand::Flutter(args)) => success(flutter::run(&args)),
+        Command::Collect(CollectCommand::Lcov(args)) => success(collect_lcov::run(&args)),
         Command::Report(ReportCommand::Html(args)) => success(report::run(&args)),
         Command::Report(ReportCommand::Github(args)) => success(report_github::run(&args)),
         Command::Report(ReportCommand::Markdown(args)) => success(report_markdown::run(&args)),

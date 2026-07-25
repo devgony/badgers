@@ -1,0 +1,38 @@
+name: coverage
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: write # `read` is sufficient when repository storage/Pages are disabled
+  checks: write
+  pull-requests: write
+
+concurrency:
+  group: badgers-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - run: flutter pub get
+
+      - uses: devgony/badgers@v1
+        with:
+          coverage-command: flutter test --coverage
+          lcov-file: coverage/lcov.info
+          github-storage-repo: ${{ github.repository }}
+          markdown-summary: true
