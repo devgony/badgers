@@ -286,6 +286,28 @@ fn render(
         )
     );
 
+    if let Some(branch_totals) = comparison.head_branch_totals() {
+        let _ = writeln!(
+            out,
+            "| **Branches** | {} ({}/{}) | {} |",
+            fmt_pct(branch_totals.pct()),
+            branch_totals.covered,
+            branch_totals.total,
+            fmt_delta(
+                comparison.branch_delta_pct(),
+                comparison.base_available,
+                comparison.scope_changed()
+            )
+        );
+        let branch_diff = comparison.branch_diff_totals();
+        if branch_diff.relevant > 0 {
+            let _ = writeln!(
+                out,
+                "| **Changed branches** | {} | — |",
+                diff_cell(branch_diff.covered, branch_diff.relevant)
+            );
+        }
+    }
     let _ = writeln!(
         out,
         "| **Changed lines** | {} | — |\n",
@@ -723,6 +745,53 @@ mod tests {
             markdown.find("## Changed executable lines").unwrap()
                 < markdown.find("## Coverage by path").unwrap()
         );
+    }
+
+    #[test]
+    fn renders_branch_summary_rows_only_with_branch_data() {
+        let mut comparison = analysis(Comparison {
+            base_available: true,
+            files: vec![FileDelta {
+                path: "pkg/app.py".into(),
+                base: Some(Counts {
+                    covered: 2,
+                    executable: 2,
+                }),
+                head: Some(Counts {
+                    covered: 2,
+                    executable: 2,
+                }),
+                base_branches: Some(badge_rs_core::compare::BranchCounts {
+                    covered: 1,
+                    total: 2,
+                }),
+                head_branches: Some(badge_rs_core::compare::BranchCounts {
+                    covered: 3,
+                    total: 4,
+                }),
+                branch_diff: BranchDiffCoverage {
+                    relevant: 2,
+                    covered: 1,
+                    partial_lines: vec![7],
+                },
+                diff: DiffCoverage {
+                    relevant: 1,
+                    covered: 1,
+                    uncovered_lines: vec![],
+                },
+            }],
+        });
+        let markdown = render(&snapshot(), &comparison, None, None, "");
+        assert!(markdown.contains("| **Branches** | 75.00% (3/4) | 🟢 +25.00%p |"));
+        assert!(markdown.contains("| **Changed branches** | 50.00% (1/2) | — |"));
+
+        let file = &mut comparison.comparison.files[0];
+        file.base_branches = None;
+        file.head_branches = None;
+        file.branch_diff = BranchDiffCoverage::default();
+        let line_only = render(&snapshot(), &comparison, None, None, "");
+        assert!(!line_only.contains("**Branches**"));
+        assert!(!line_only.contains("**Changed branches**"));
     }
 
     #[test]

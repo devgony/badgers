@@ -566,6 +566,29 @@ fn render_index(head: &CoverageSnapshot, comparison: &ComparisonAnalysis) -> Str
     };
 
     let scope_notice = render_scope_notice(comparison);
+    let branch_card = comparison
+        .head_branch_totals()
+        .map(|branch_totals| {
+            let branch_diff = comparison.branch_diff_totals();
+            let changed = if branch_diff.relevant > 0 {
+                format!(
+                    " · {} of {} changed branches taken",
+                    branch_diff.covered, branch_diff.relevant
+                )
+            } else {
+                String::new()
+            };
+            format!(
+                r#"<div class="card"><div class="label">Branch coverage</div>
+<div class="value">{pct}</div>
+<div class="sub">{covered}/{total} branches{changed}</div></div>
+"#,
+                pct = fmt_pct(branch_totals.pct()),
+                covered = branch_totals.covered,
+                total = branch_totals.total,
+            )
+        })
+        .unwrap_or_default();
 
     format!(
         r#"<!DOCTYPE html>
@@ -582,7 +605,7 @@ fn render_index(head: &CoverageSnapshot, comparison: &ComparisonAnalysis) -> Str
 <div class="card"><div class="label">Diff coverage (changed lines)</div>
 <div class="value">{diff_pct}</div>
 <div class="sub">{diff_covered}/{diff_relevant} changed executable lines</div></div>
-</div>
+{branch_card}</div>
 {scope_notice}
 <div class="tree">
 <div class="row header">
@@ -813,6 +836,59 @@ mod tests {
         assert!(html.contains("pkg/disappeared.py"));
         assert!(html.contains("<span class=\"flat\">n/a</span> coverage scope changed"));
         assert!(html.contains("<span class=\"up\">+50.00%p</span>"));
+    }
+
+    #[test]
+    fn html_renders_branch_card_only_with_branch_data() {
+        let snapshot = CoverageSnapshot::new(
+            "owner/repo".into(),
+            "abcdef1234567890".into(),
+            None,
+            None,
+            "2026-07-23T00:00:00Z".into(),
+            ToolVersions {
+                badgers: "1.2.0".into(),
+                cargo_llvm_cov: None,
+                coverage_py: None,
+            },
+            vec![],
+        );
+        let mut analysis: ComparisonAnalysis = Comparison {
+            base_available: false,
+            files: vec![FileDelta {
+                path: "pkg/app.py".into(),
+                base: None,
+                head: Some(Counts {
+                    covered: 2,
+                    executable: 2,
+                }),
+                base_branches: None,
+                head_branches: Some(badge_rs_core::compare::BranchCounts {
+                    covered: 3,
+                    total: 4,
+                }),
+                branch_diff: BranchDiffCoverage {
+                    relevant: 2,
+                    covered: 1,
+                    partial_lines: vec![7],
+                },
+                diff: DiffCoverage {
+                    relevant: 0,
+                    covered: 0,
+                    uncovered_lines: vec![],
+                },
+            }],
+        }
+        .into();
+
+        let html = render_index(&snapshot, &analysis);
+        assert!(html.contains("Branch coverage"));
+        assert!(html.contains("3/4 branches · 1 of 2 changed branches taken"));
+
+        analysis.comparison.files[0].head_branches = None;
+        analysis.comparison.files[0].branch_diff = BranchDiffCoverage::default();
+        let line_only = render_index(&snapshot, &analysis);
+        assert!(!line_only.contains("Branch coverage"));
     }
 
     #[test]
