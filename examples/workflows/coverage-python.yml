@@ -30,10 +30,10 @@ jobs:
 
       - run: pip install coverage pytest
 
-      - uses: devgony/badgers@v1
+      - uses: devgony/badgers@v2
         with:
           coverage-command: >-
-            python -m coverage run -m pytest &&
+            python -m coverage run --branch -m pytest &&
             mkdir -p coverage &&
             python -m coverage lcov -o coverage/lcov.info
           lcov-file: coverage/lcov.info

@@ -129,9 +129,16 @@ tooling; Badgers consumes the LCOV file it writes and normalizes it into one
 coverage model. Any toolchain works as long as it produces LCOV:
 
 - Rust: `cargo llvm-cov --workspace --lcov --output-path coverage/lcov.info`
-- Python: `coverage run -m pytest && coverage lcov -o coverage/lcov.info`
-- Flutter: `flutter test --coverage`
+- Python: `coverage run --branch -m pytest && coverage lcov -o coverage/lcov.info`
+- Flutter: `flutter test --coverage --branch-coverage`
 - Anything else: point `lcov-file` at the file your tool writes
+
+Line coverage is the baseline metric. When the LCOV file also carries branch
+(`BRDA`) or function (`FN`/`FNDA`) records, Badgers reports branch and
+function totals plus changed-branch coverage, and lists changed lines whose
+branches are only partially taken. Python needs `coverage run --branch`,
+Flutter needs `flutter test --branch-coverage`, and Rust currently needs a
+nightly toolchain (`cargo +nightly llvm-cov --branch`).
 
 Ready-to-copy workflow files for Rust, Python, and Flutter live in
 [`examples/workflows/`](./examples/workflows).
@@ -175,7 +182,7 @@ steps:
       workload_identity_provider: projects/123456789/locations/global/workloadIdentityPools/github/providers/github
       service_account: coverage-writer@my-gcp-project.iam.gserviceaccount.com
 
-  - uses: devgony/badgers@v1
+  - uses: devgony/badgers@v2
     with:
       coverage-command: >-
         cargo llvm-cov --workspace --lcov --output-path coverage/lcov.info

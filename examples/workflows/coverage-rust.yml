@@ -32,7 +32,9 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
-      - uses: devgony/badgers@v1
+      # Branch coverage for Rust requires nightly: install a nightly
+      # toolchain and use "cargo +nightly llvm-cov --branch ..." instead.
+      - uses: devgony/badgers@v2
         with:
           coverage-command: >-
             cargo llvm-cov --workspace --lcov --output-path coverage/lcov.info
