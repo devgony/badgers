@@ -344,6 +344,30 @@ fn render_comment(marker: &str, comparison: &ComparisonAnalysis, args: &GithubAr
         )
     };
     let _ = writeln!(out, "| **Diff** | {diff_cell} | |");
+    if let Some(branch_totals) = comparison.head_branch_totals() {
+        let _ = writeln!(
+            out,
+            "| **Branch** | {} ({}/{}) | {} |",
+            fmt_pct(branch_totals.pct()),
+            branch_totals.covered,
+            branch_totals.total,
+            fmt_delta(
+                comparison.branch_delta_pct(),
+                comparison.base_available,
+                comparison.scope_changed()
+            ),
+        );
+        let branch_diff = comparison.branch_diff_totals();
+        if branch_diff.relevant > 0 {
+            let _ = writeln!(
+                out,
+                "| **Branch diff** | {} ({}/{}) | |",
+                fmt_pct(branch_diff.pct()),
+                branch_diff.covered,
+                branch_diff.relevant,
+            );
+        }
+    }
     let _ = writeln!(out);
 
     render_scope_change(&mut out, comparison);
@@ -360,6 +384,7 @@ fn render_comment(marker: &str, comparison: &ComparisonAnalysis, args: &GithubAr
     let _ = writeln!(out, "{}", context_line.join(" · "));
 
     render_uncovered(&mut out, comparison);
+    render_partial_branches(&mut out, comparison);
 
     let mut links = Vec::new();
     if let Some(url) = args
@@ -451,6 +476,44 @@ fn render_uncovered(out: &mut String, comparison: &ComparisonAnalysis) {
     let _ = writeln!(out);
     for file in files {
         let ranges = line_ranges(&file.diff.uncovered_lines);
+        let shown: Vec<String> = ranges.iter().take(MAX_RANGES_PER_FILE).cloned().collect();
+        let suffix = if ranges.len() > MAX_RANGES_PER_FILE {
+            format!(" … and {} more", ranges.len() - MAX_RANGES_PER_FILE)
+        } else {
+            String::new()
+        };
+        let _ = writeln!(
+            out,
+            "- {}: {}{}",
+            markdown_code_path(&file.path),
+            shown.join(", "),
+            suffix
+        );
+    }
+    let _ = writeln!(out, "</details>");
+}
+
+fn render_partial_branches(out: &mut String, comparison: &ComparisonAnalysis) {
+    let files: Vec<_> = comparison
+        .files
+        .iter()
+        .filter(|f| !f.branch_diff.partial_lines.is_empty())
+        .collect();
+    if files.is_empty() {
+        return;
+    }
+    let total: usize = files
+        .iter()
+        .map(|f| f.branch_diff.partial_lines.len())
+        .sum();
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "<details><summary>Changed lines with partially covered branches ({total})</summary>"
+    );
+    let _ = writeln!(out);
+    for file in files {
+        let ranges = line_ranges(&file.branch_diff.partial_lines);
         let shown: Vec<String> = ranges.iter().take(MAX_RANGES_PER_FILE).cloned().collect();
         let suffix = if ranges.len() > MAX_RANGES_PER_FILE {
             format!(" … and {} more", ranges.len() - MAX_RANGES_PER_FILE)
@@ -649,6 +712,35 @@ mod tests {
         assert!(body.contains(
             "**Reports:** <a href=\"https://example.com/report.md\">Detailed coverage report</a> · <a href=\"https://github.com/owner/repo/pull/5/files\">Files changed annotations</a> · <a href=\"https://example.com/report\">HTML report</a>"
         ));
+    }
+
+    #[test]
+    fn renders_branch_rows_and_partial_branch_lines() {
+        let mut analysis = comparison();
+        let file = &mut analysis.comparison.files[0];
+        file.base_branches = Some(badge_rs_core::compare::BranchCounts {
+            covered: 1,
+            total: 2,
+        });
+        file.head_branches = Some(badge_rs_core::compare::BranchCounts {
+            covered: 3,
+            total: 4,
+        });
+        file.branch_diff = BranchDiffCoverage {
+            relevant: 2,
+            covered: 1,
+            partial_lines: vec![8, 9],
+        };
+
+        let body = render_comment("<!-- m -->", &analysis, &args());
+        assert!(body.contains("| **Branch** | 75.00% (3/4) | 🟢 +25.00%p |"));
+        assert!(body.contains("| **Branch diff** | 50.00% (1/2) | |"));
+        assert!(body.contains("Changed lines with partially covered branches (2)"));
+        assert!(body.contains("- <code>pkg/calc.py</code>: L8-L9"));
+
+        let line_only = render_comment("<!-- m -->", &comparison(), &args());
+        assert!(!line_only.contains("**Branch**"));
+        assert!(!line_only.contains("partially covered branches"));
     }
 
     #[test]
