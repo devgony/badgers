@@ -6,6 +6,11 @@ Badgers is a coverage checker for any test tool that produces LCOV. Run your own
 
 ## Install
 
+> [!IMPORTANT]
+> Badgers v2 uses a generic LCOV contract. Existing v1 workflows must make
+> `coverage-command` write an LCOV file before upgrading. See the
+> [v2 migration guide](./docs/migrating-to-v2.md).
+
 Install a prebuilt binary without Cargo:
 
 ```bash
