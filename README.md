@@ -217,6 +217,11 @@ contains uncovered changed executable lines. Combined with branch protection,
 this blocks merging until the coverage gap is closed; agents then backfill
 tests locally with `badgers cov` until the gate passes.
 
+`fail-on-partial-branches` (default `false`) is the branch-coverage analog: it
+fails while changed lines still have partially taken branches. It requires
+branch data in the LCOV file. The matching local flag is
+`badgers cov --fail-on-partial-branches`.
+
 `check-annotations` defaults to `true`. With `checks: write`, Badgers creates a
 `Badgers diff coverage` check and places warnings for uncovered changed
 executable lines directly in the pull request's **Files changed** view. Fork
