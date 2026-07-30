@@ -177,6 +177,19 @@ pub(crate) fn uncovered_count(comparison: &Comparison) -> usize {
     comparison.files.iter().map(file_uncovered_count).sum()
 }
 
+pub(crate) fn partial_branch_line_count(comparison: &Comparison) -> usize {
+    comparison
+        .files
+        .iter()
+        .map(|file| {
+            let mut lines = file.branch_diff.partial_lines.clone();
+            lines.sort_unstable();
+            lines.dedup();
+            lines.len()
+        })
+        .sum()
+}
+
 fn file_uncovered_count(file: &FileDelta) -> usize {
     let mut lines = file.diff.uncovered_lines.clone();
     lines.sort_unstable();

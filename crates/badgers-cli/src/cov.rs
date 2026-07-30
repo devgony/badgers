@@ -10,7 +10,8 @@ use badge_rs_lcov::{ParseOptions, parse_lcov};
 use clap::Args;
 
 use crate::render::{
-    RenderOptions, render_comparison, render_comparison_with_options, uncovered_count,
+    RenderOptions, partial_branch_line_count, render_comparison, render_comparison_with_options,
+    uncovered_count,
 };
 use crate::report::{git_diff_output, read_snapshot};
 
@@ -43,6 +44,10 @@ pub struct CovArgs {
     /// Always exit 0, even when displayed uncovered lines remain
     #[arg(long)]
     pub no_fail: bool,
+
+    /// Also fail while changed lines have partially covered branches
+    #[arg(long)]
+    pub fail_on_partial_branches: bool,
 }
 
 pub fn run(args: &CovArgs) -> Result<ExitCode> {
@@ -93,7 +98,11 @@ pub fn run(args: &CovArgs) -> Result<ExitCode> {
     };
     print!("{rendered}");
 
-    Ok(comparison_exit_code(&comparison, args.no_fail))
+    Ok(comparison_exit_code(
+        &comparison,
+        args.no_fail,
+        args.fail_on_partial_branches,
+    ))
 }
 
 fn all_executable_lines(snapshot: &CoverageSnapshot) -> ChangedLines {
@@ -286,8 +295,16 @@ fn git_output(repo_root: &Path, args: &[&str], action: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn comparison_exit_code(comparison: &Comparison, no_fail: bool) -> ExitCode {
-    if !no_fail && uncovered_count(comparison) > 0 {
+fn comparison_exit_code(
+    comparison: &Comparison,
+    no_fail: bool,
+    fail_on_partial_branches: bool,
+) -> ExitCode {
+    let mut failing = uncovered_count(comparison);
+    if fail_on_partial_branches {
+        failing += partial_branch_line_count(comparison);
+    }
+    if !no_fail && failing > 0 {
         ExitCode::from(1)
     } else {
         ExitCode::SUCCESS
@@ -370,14 +387,61 @@ src/lib.rs:11 [changed-uncovered]\n"
     #[test]
     fn uncovered_lines_control_exit_code_unless_no_fail_is_set() {
         let comparison = comparison_with_uncovered_line();
-        assert_eq!(comparison_exit_code(&comparison, false), ExitCode::from(1));
-        assert_eq!(comparison_exit_code(&comparison, true), ExitCode::SUCCESS);
+        assert_eq!(
+            comparison_exit_code(&comparison, false, false),
+            ExitCode::from(1)
+        );
+        assert_eq!(
+            comparison_exit_code(&comparison, true, false),
+            ExitCode::SUCCESS
+        );
 
         let clean = Comparison {
             base_available: false,
             files: Vec::new(),
         };
-        assert_eq!(comparison_exit_code(&clean, false), ExitCode::SUCCESS);
+        assert_eq!(
+            comparison_exit_code(&clean, false, false),
+            ExitCode::SUCCESS
+        );
+    }
+
+    #[test]
+    fn partial_branches_fail_only_with_opt_in_flag() {
+        let head = snapshot(vec![FileCoverage::detailed(
+            "src/lib.rs".into(),
+            Language::Rust,
+            vec![LineHit { line: 10, hits: 1 }],
+            vec![
+                BranchHit {
+                    line: 10,
+                    block: "0".into(),
+                    branch: "0".into(),
+                    taken: Some(1),
+                },
+                BranchHit {
+                    line: 10,
+                    block: "0".into(),
+                    branch: "1".into(),
+                    taken: Some(0),
+                },
+            ],
+            Vec::new(),
+        )]);
+        let comparison = compare(None, &head, &all_executable_lines(&head));
+
+        assert_eq!(
+            comparison_exit_code(&comparison, false, false),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            comparison_exit_code(&comparison, false, true),
+            ExitCode::from(1)
+        );
+        assert_eq!(
+            comparison_exit_code(&comparison, true, true),
+            ExitCode::SUCCESS
+        );
     }
 
     #[test]
@@ -485,12 +549,15 @@ Changed-line coverage: 50.00% (1/2)\n\
 crates/badgers-cli/src/cov.rs:11 [changed-uncovered]\n"
         );
         assert_eq!(uncovered_count(&comparison), 1);
-        assert_eq!(comparison_exit_code(&comparison, false), ExitCode::from(1));
+        assert_eq!(
+            comparison_exit_code(&comparison, false, false),
+            ExitCode::from(1)
+        );
 
         let mut covered_only = compare(Some(&base), &head, &changed);
         filter_comparison(&mut covered_only, &["covered".into()]);
         assert_eq!(
-            comparison_exit_code(&covered_only, false),
+            comparison_exit_code(&covered_only, false, false),
             ExitCode::SUCCESS
         );
     }
