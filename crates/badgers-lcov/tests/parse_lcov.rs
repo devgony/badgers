@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use badge_rs_core::{Language, LineHit};
+use badge_rs_core::{BranchHit, FunctionHit, Language, LineHit};
 use badge_rs_lcov::{LcovError, ParseOptions, parse_lcov};
 
 fn opts(root: &Path) -> ParseOptions<'_> {
@@ -36,7 +36,7 @@ fn parses_basic_python_lcov() {
 }
 
 #[test]
-fn ignores_function_and_branch_records_and_da_checksum() {
+fn parses_function_and_branch_records_and_ignores_da_checksum() {
     let input = include_str!("fixtures/mixed_records.lcov");
     let outcome = parse_lcov(input, &opts(Path::new("/repo"))).unwrap();
     assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
@@ -45,6 +45,116 @@ fn ignores_function_and_branch_records_and_da_checksum() {
     assert_eq!(file.executable_lines(), 3);
     assert_eq!(file.covered_lines(), 3);
     assert_eq!(file.line_hits[1], LineHit { line: 2, hits: 3 });
+
+    assert_eq!(
+        file.functions,
+        vec![FunctionHit {
+            name: "main".to_string(),
+            line: 1,
+            hits: 3,
+        }]
+    );
+    assert_eq!(file.total_functions(), 1);
+    assert_eq!(file.covered_functions(), 1);
+
+    assert_eq!(
+        file.branches,
+        vec![
+            BranchHit {
+                line: 2,
+                block: "0".to_string(),
+                branch: "0".to_string(),
+                taken: Some(1),
+            },
+            BranchHit {
+                line: 2,
+                block: "0".to_string(),
+                branch: "1".to_string(),
+                taken: Some(0),
+            },
+        ]
+    );
+    assert_eq!(file.total_branches(), 2);
+    assert_eq!(file.covered_branches(), 1);
+}
+
+#[test]
+fn merges_dash_branches_across_repeated_sf_blocks() {
+    let input = "\
+SF:a.dart
+DA:1,0
+BRDA:1,0,0,-
+BRDA:1,0,1,-
+end_of_record
+SF:a.dart
+DA:1,2
+BRDA:1,0,0,2
+BRDA:1,0,1,-
+end_of_record
+";
+    let outcome = parse_lcov(input, &opts(Path::new("/repo"))).unwrap();
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    let file = &outcome.files[0];
+    assert_eq!(
+        file.branches,
+        vec![
+            BranchHit {
+                line: 1,
+                block: "0".to_string(),
+                branch: "0".to_string(),
+                taken: Some(2),
+            },
+            BranchHit {
+                line: 1,
+                block: "0".to_string(),
+                branch: "1".to_string(),
+                taken: None,
+            },
+        ]
+    );
+    assert_eq!(file.covered_branches(), 1);
+}
+
+#[test]
+fn warns_on_malformed_function_and_branch_records_without_failing() {
+    let input = "\
+SF:a.py
+DA:1,1
+FN:notaline,main
+FNDA:notacount,main
+BRDA:1,0,0
+end_of_record
+";
+    let outcome = parse_lcov(input, &opts(Path::new("/repo"))).unwrap();
+    assert_eq!(outcome.files.len(), 1);
+    assert!(outcome.files[0].functions.is_empty());
+    assert!(outcome.files[0].branches.is_empty());
+    assert_eq!(outcome.warnings.len(), 3);
+    assert!(outcome.warnings[0].contains("malformed FN"));
+    assert!(outcome.warnings[1].contains("malformed FNDA"));
+    assert!(outcome.warnings[2].contains("malformed BRDA"));
+}
+
+#[test]
+fn warns_on_function_and_branch_summary_mismatches() {
+    let input = "\
+SF:a.py
+DA:1,1
+FN:1,main
+FNDA:0,main
+FNF:2
+FNH:1
+BRDA:1,0,0,1
+BRF:2
+BRH:0
+end_of_record
+";
+    let outcome = parse_lcov(input, &opts(Path::new("/repo"))).unwrap();
+    assert_eq!(outcome.warnings.len(), 4);
+    assert!(outcome.warnings[0].contains("FNF=2"));
+    assert!(outcome.warnings[1].contains("FNH=1"));
+    assert!(outcome.warnings[2].contains("BRF=2"));
+    assert!(outcome.warnings[3].contains("BRH=0"));
 }
 
 #[test]
