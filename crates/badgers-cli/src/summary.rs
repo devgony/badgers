@@ -34,6 +34,24 @@ pub fn render(snapshot: &CoverageSnapshot) -> String {
         snapshot.covered_lines(),
         fmt_pct(snapshot.coverage_pct())
     );
+    if snapshot.total_branches() > 0 {
+        let _ = writeln!(
+            out,
+            "Branch coverage:   {} ({}/{})",
+            fmt_pct(snapshot.branch_pct()),
+            snapshot.covered_branches(),
+            snapshot.total_branches()
+        );
+    }
+    if snapshot.total_functions() > 0 {
+        let _ = writeln!(
+            out,
+            "Function coverage: {} ({}/{})",
+            fmt_pct(snapshot.function_pct()),
+            snapshot.covered_functions(),
+            snapshot.total_functions()
+        );
+    }
     out
 }
 

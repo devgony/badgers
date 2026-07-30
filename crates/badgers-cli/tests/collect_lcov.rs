@@ -89,6 +89,40 @@ fn collect_lcov_defaults_to_coverage_lcov_info() {
 }
 
 #[test]
+fn collect_lcov_captures_branch_and_function_coverage() {
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/branch_function.lcov"
+    );
+    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("branch-snapshot.json");
+
+    Command::cargo_bin("badgers")
+        .unwrap()
+        .args(["collect", "lcov", "--lcov-file", fixture])
+        .args(["--repo-root", "."])
+        .arg("-o")
+        .arg(&out)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Branch coverage:   50.00% (2/4)"))
+        .stdout(predicate::str::contains("Function coverage: 50.00% (1/2)"));
+
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let file = &json["files"][0];
+    assert_eq!(file["path"], "lib/calc.dart");
+    let branches = file["branches"].as_array().unwrap();
+    assert_eq!(branches.len(), 4);
+    assert_eq!(branches[0]["line"], 2);
+    assert_eq!(branches[0]["taken"], 3);
+    assert!(branches[2]["taken"].is_null());
+    let functions = file["functions"].as_array().unwrap();
+    assert_eq!(functions.len(), 2);
+    assert_eq!(functions[0]["name"], "add");
+    assert_eq!(functions[0]["hits"], 4);
+}
+
+#[test]
 fn collect_lcov_missing_file_fails_with_code_1() {
     Command::cargo_bin("badgers")
         .unwrap()
