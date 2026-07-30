@@ -11,6 +11,7 @@ pub(crate) struct RenderOptions {
     heading: &'static str,
     uncovered_qualifier: &'static str,
     marker: &'static str,
+    branch_marker: &'static str,
     show_changed_line_coverage: bool,
 }
 
@@ -19,6 +20,7 @@ impl RenderOptions {
         heading: "Coverage",
         uncovered_qualifier: "",
         marker: "uncovered",
+        branch_marker: "branch-partial",
         show_changed_line_coverage: false,
     };
 
@@ -26,6 +28,7 @@ impl RenderOptions {
         heading: "Coverage diff",
         uncovered_qualifier: "changed ",
         marker: "changed-uncovered",
+        branch_marker: "changed-branch-partial",
         show_changed_line_coverage: true,
     };
 }
@@ -92,6 +95,26 @@ fn render_comparison_inner(
             diff.relevant
         );
     }
+    if let Some(branch_totals) = comparison.head_branch_totals() {
+        let _ = writeln!(
+            out,
+            "Branch coverage: {} ({})",
+            format_pct(branch_totals.pct()),
+            format_branch_delta(comparison, analysis)
+        );
+        if options.show_changed_line_coverage {
+            let branch_diff = comparison.branch_diff_totals();
+            if branch_diff.relevant > 0 {
+                let _ = writeln!(
+                    out,
+                    "Changed-branch coverage: {} ({}/{})",
+                    format_pct(branch_diff.pct()),
+                    branch_diff.covered,
+                    branch_diff.relevant
+                );
+            }
+        }
+    }
 
     if let Some(analysis) = analysis.filter(|analysis| analysis.scope_changed()) {
         let _ = writeln!(out, "Coverage scope changed; aggregate delta suppressed");
@@ -127,6 +150,26 @@ fn render_comparison_inner(
             );
         }
     }
+
+    let mut partial_files: Vec<_> = comparison
+        .files
+        .iter()
+        .filter(|file| !file.branch_diff.partial_lines.is_empty())
+        .collect();
+    partial_files.sort_by(|a, b| a.path.cmp(&b.path));
+    for file in partial_files {
+        let mut lines = file.branch_diff.partial_lines.clone();
+        lines.sort_unstable();
+        lines.dedup();
+        let ranges = line_ranges(&lines);
+        let _ = writeln!(
+            out,
+            "{}:{} [{}]",
+            escape_path(&file.path),
+            ranges.join(","),
+            options.branch_marker
+        );
+    }
     out
 }
 
@@ -158,6 +201,19 @@ fn format_delta(comparison: &Comparison, analysis: Option<&ComparisonAnalysis>) 
         .delta_pct()
         .map(|delta| format!("{delta:+.2}pp"))
         .unwrap_or_else(|| "n/a".into())
+}
+
+fn format_branch_delta(comparison: &Comparison, analysis: Option<&ComparisonAnalysis>) -> String {
+    if !comparison.base_available {
+        return "no baseline".into();
+    }
+    if analysis.is_some_and(ComparisonAnalysis::scope_changed) {
+        return "coverage scope changed".into();
+    }
+    comparison
+        .branch_delta_pct()
+        .map(|delta| format!("{delta:+.2}pp"))
+        .unwrap_or_else(|| "no branch baseline".into())
 }
 
 pub(crate) fn bounded_scope_entries(

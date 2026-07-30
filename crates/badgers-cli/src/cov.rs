@@ -299,7 +299,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use badge_rs_core::compare::ChangedLines;
-    use badge_rs_core::{FileCoverage, Language, LineHit};
+    use badge_rs_core::{BranchHit, FileCoverage, Language, LineHit};
 
     use super::*;
 
@@ -378,6 +378,54 @@ src/lib.rs:11 [changed-uncovered]\n"
             files: Vec::new(),
         };
         assert_eq!(comparison_exit_code(&clean, false), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn renders_branch_coverage_and_partial_markers() {
+        let head = snapshot(vec![FileCoverage::detailed(
+            "src/lib.rs".into(),
+            Language::Rust,
+            vec![LineHit { line: 10, hits: 1 }, LineHit { line: 11, hits: 1 }],
+            vec![
+                BranchHit {
+                    line: 10,
+                    block: "0".into(),
+                    branch: "0".into(),
+                    taken: Some(1),
+                },
+                BranchHit {
+                    line: 10,
+                    block: "0".into(),
+                    branch: "1".into(),
+                    taken: Some(0),
+                },
+            ],
+            Vec::new(),
+        )]);
+        let comparison = compare(None, &head, &all_executable_lines(&head));
+
+        assert_eq!(
+            render_comparison("Local: main @ 0123456", &comparison),
+            "Coverage diff: no uncovered changed executable lines\n\
+Local: main @ 0123456\n\
+Total coverage: 100.00% (no baseline)\n\
+Changed-line coverage: 100.00% (2/2)\n\
+Branch coverage: 50.00% (no baseline)\n\
+Changed-branch coverage: 50.00% (1/2)\n\
+src/lib.rs:10 [changed-branch-partial]\n"
+        );
+        assert_eq!(
+            render_comparison_with_options(
+                "Local: main @ 0123456",
+                &comparison,
+                RenderOptions::REPO_WIDE,
+            ),
+            "Coverage: no uncovered executable lines\n\
+Local: main @ 0123456\n\
+Total coverage: 100.00% (no baseline)\n\
+Branch coverage: 50.00% (no baseline)\n\
+src/lib.rs:10 [branch-partial]\n"
+        );
     }
 
     #[test]
