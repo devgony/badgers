@@ -51,6 +51,17 @@ pub struct SnapshotPushArgs {
 }
 
 const ZSTD_LEVEL: i32 = 3;
+/// Readers reject stored artifacts above this decompressed size
+/// (`baseline_fetch`, `diff`); refuse to publish anything they cannot read.
+const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
+
+fn ensure_readable_artifact_size(len: u64, what: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        len <= MAX_ARTIFACT_BYTES,
+        "{what} is {len} bytes, above the 64 MiB limit stored artifacts must stay readable under"
+    );
+    Ok(())
+}
 
 pub fn run(args: &SnapshotPushArgs) -> anyhow::Result<()> {
     let backend = args.storage.backend()?;
@@ -58,6 +69,7 @@ pub fn run(args: &SnapshotPushArgs) -> anyhow::Result<()> {
 
     let json = std::fs::read(&args.snapshot)
         .with_context(|| format!("reading snapshot {}", args.snapshot.display()))?;
+    ensure_readable_artifact_size(json.len() as u64, "coverage snapshot")?;
     let snapshot: CoverageSnapshot = serde_json::from_slice(&json)
         .with_context(|| format!("parsing snapshot {}", args.snapshot.display()))?;
     anyhow::ensure!(
@@ -82,6 +94,7 @@ pub fn run(args: &SnapshotPushArgs) -> anyhow::Result<()> {
     let comparison_key = if let Some(path) = &args.comparison {
         let json = std::fs::read(path)
             .with_context(|| format!("reading comparison {}", path.display()))?;
+        ensure_readable_artifact_size(json.len() as u64, "coverage comparison")?;
         let comparison: ComparisonAnalysisDocument = serde_json::from_slice(&json)
             .with_context(|| format!("parsing comparison {}", path.display()))?;
         anyhow::ensure!(
@@ -272,5 +285,17 @@ fn html_content_type(filename: &str) -> &'static str {
         "ico" => "image/x-icon",
         "json" => "application/json",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refuses_artifacts_readers_would_reject() {
+        assert!(ensure_readable_artifact_size(MAX_ARTIFACT_BYTES, "snapshot").is_ok());
+        let err = ensure_readable_artifact_size(MAX_ARTIFACT_BYTES + 1, "snapshot").unwrap_err();
+        assert!(err.to_string().contains("64 MiB"));
     }
 }
