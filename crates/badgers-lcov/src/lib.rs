@@ -286,18 +286,17 @@ fn parse_brda(rest: &str) -> Option<(u32, String, String, Option<u64>)> {
     let block_id = fields.next()?.trim();
     let remainder = fields.next()?;
     let (branch_id, taken_field) = remainder.rsplit_once(',')?;
+    let branch_id = branch_id.trim();
+    if line_no == 0 || block_id.is_empty() || branch_id.is_empty() {
+        return None;
+    }
     let taken_field = taken_field.trim();
     let taken = if taken_field == "-" {
         None
     } else {
         Some(taken_field.parse().ok()?)
     };
-    Some((
-        line_no,
-        block_id.to_string(),
-        branch_id.trim().to_string(),
-        taken,
-    ))
+    Some((line_no, block_id.to_string(), branch_id.to_string(), taken))
 }
 
 fn finish_block(
@@ -474,5 +473,14 @@ mod tests {
         );
         assert_eq!(parse_brda("7,0,1"), None);
         assert_eq!(parse_brda("x,0,1,2"), None);
+    }
+
+    #[test]
+    fn parse_brda_rejects_zero_lines_and_empty_identifiers() {
+        assert_eq!(parse_brda("0,0,1,1"), None);
+        assert_eq!(parse_brda("1,,1,1"), None);
+        assert_eq!(parse_brda("1, ,1,1"), None);
+        assert_eq!(parse_brda("1,0,,1"), None);
+        assert_eq!(parse_brda("1,0, ,-"), None);
     }
 }
