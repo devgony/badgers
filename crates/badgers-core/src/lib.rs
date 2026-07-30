@@ -52,6 +52,45 @@ pub struct LineHit {
     pub hits: u64,
 }
 
+/// Outcome count for a single branch of a decision point (LCOV `BRDA`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchHit {
+    /// 1-based line number.
+    pub line: u32,
+    /// LCOV `BRDA` block identifier, kept verbatim.
+    pub block: String,
+    /// LCOV `BRDA` branch identifier or expression, kept verbatim.
+    pub branch: String,
+    /// Times the branch was taken; `None` when the decision point was never
+    /// evaluated (LCOV `-`).
+    pub taken: Option<u64>,
+}
+
+impl BranchHit {
+    /// A branch counts as covered only when it was taken at least once.
+    pub fn is_covered(&self) -> bool {
+        self.taken.is_some_and(|taken| taken > 0)
+    }
+
+    /// LCOV tracefile merge rule for `BRDA` taken counts: `-` (never
+    /// evaluated) merges as the other side; two counts sum (saturating).
+    pub fn merge_taken(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+        match (a, b) {
+            (None, other) | (other, None) => other,
+            (Some(a), Some(b)) => Some(a.saturating_add(b)),
+        }
+    }
+}
+
+/// Execution count for a single function (LCOV `FN`/`FNDA`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionHit {
+    pub name: String,
+    /// 1-based line of the function start; 0 when the report omitted it.
+    pub line: u32,
+    pub hits: u64,
+}
+
 /// Line coverage for one file.
 ///
 /// `line_hits` is the canonical source of truth; executable/covered counts
@@ -63,23 +102,78 @@ pub struct FileCoverage {
     pub language: Language,
     /// Sorted by line, no duplicate lines (guaranteed by [`FileCoverage::new`]).
     pub line_hits: Vec<LineHit>,
+    /// Sorted by (line, block, branch), no duplicates (guaranteed by
+    /// [`FileCoverage::detailed`]). Additive field; absent in older snapshots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub branches: Vec<BranchHit>,
+    /// Sorted by name, no duplicate names (guaranteed by
+    /// [`FileCoverage::detailed`]). Additive field; absent in older snapshots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub functions: Vec<FunctionHit>,
 }
 
 impl FileCoverage {
-    /// Builds a `FileCoverage`, enforcing invariants: `line_hits` sorted by
-    /// line with duplicates merged by summing hits (saturating).
+    /// Builds a line-only `FileCoverage`; see [`FileCoverage::detailed`].
     pub fn new(path: String, language: Language, line_hits: Vec<LineHit>) -> Self {
+        Self::detailed(path, language, line_hits, Vec::new(), Vec::new())
+    }
+
+    /// Builds a `FileCoverage`, enforcing invariants: `line_hits` sorted by
+    /// line with duplicates merged by summing hits (saturating); `branches`
+    /// sorted by (line, block, branch) with duplicate taken-counts merged
+    /// (LCOV rule: `-` merges as the other side, counts sum); `functions`
+    /// sorted by name with hits summed and the smallest start line kept.
+    pub fn detailed(
+        path: String,
+        language: Language,
+        line_hits: Vec<LineHit>,
+        branches: Vec<BranchHit>,
+        functions: Vec<FunctionHit>,
+    ) -> Self {
         let mut merged: BTreeMap<u32, u64> = BTreeMap::new();
         for lh in line_hits {
             let slot = merged.entry(lh.line).or_insert(0);
             *slot = slot.saturating_add(lh.hits);
         }
+
+        let mut merged_branches: BTreeMap<(u32, String, String), Option<u64>> = BTreeMap::new();
+        for branch in branches {
+            let slot = merged_branches
+                .entry((branch.line, branch.block, branch.branch))
+                .or_insert(None);
+            *slot = BranchHit::merge_taken(*slot, branch.taken);
+        }
+
+        let mut merged_functions: BTreeMap<String, (u32, u64)> = BTreeMap::new();
+        for function in functions {
+            let slot = merged_functions
+                .entry(function.name)
+                .or_insert((function.line, 0));
+            if function.line != 0 && (slot.0 == 0 || function.line < slot.0) {
+                slot.0 = function.line;
+            }
+            slot.1 = slot.1.saturating_add(function.hits);
+        }
+
         Self {
             path,
             language,
             line_hits: merged
                 .into_iter()
                 .map(|(line, hits)| LineHit { line, hits })
+                .collect(),
+            branches: merged_branches
+                .into_iter()
+                .map(|((line, block, branch), taken)| BranchHit {
+                    line,
+                    block,
+                    branch,
+                    taken,
+                })
+                .collect(),
+            functions: merged_functions
+                .into_iter()
+                .map(|(name, (line, hits))| FunctionHit { name, line, hits })
                 .collect(),
         }
     }
@@ -99,6 +193,42 @@ impl FileCoverage {
         coverage_pct(
             u64::from(self.covered_lines()),
             u64::from(self.executable_lines()),
+        )
+    }
+
+    /// Number of branches (all `BRDA` outcomes, including never-evaluated).
+    pub fn total_branches(&self) -> u32 {
+        self.branches.len() as u32
+    }
+
+    /// Number of branches taken at least once.
+    pub fn covered_branches(&self) -> u32 {
+        self.branches.iter().filter(|b| b.is_covered()).count() as u32
+    }
+
+    /// Branch coverage percentage, `None` when there are no branches.
+    pub fn branch_pct(&self) -> Option<f64> {
+        coverage_pct(
+            u64::from(self.covered_branches()),
+            u64::from(self.total_branches()),
+        )
+    }
+
+    /// Number of instrumented functions.
+    pub fn total_functions(&self) -> u32 {
+        self.functions.len() as u32
+    }
+
+    /// Number of functions executed at least once.
+    pub fn covered_functions(&self) -> u32 {
+        self.functions.iter().filter(|f| f.hits > 0).count() as u32
+    }
+
+    /// Function coverage percentage, `None` when there are no functions.
+    pub fn function_pct(&self) -> Option<f64> {
+        coverage_pct(
+            u64::from(self.covered_functions()),
+            u64::from(self.total_functions()),
         )
     }
 }
@@ -152,7 +282,13 @@ impl CoverageSnapshot {
     ) -> Self {
         let mut by_path: BTreeMap<String, FileCoverage> = BTreeMap::new();
         for fc in files {
-            let fc = FileCoverage::new(fc.path, fc.language, fc.line_hits);
+            let fc = FileCoverage::detailed(
+                fc.path,
+                fc.language,
+                fc.line_hits,
+                fc.branches,
+                fc.functions,
+            );
             match by_path.entry(fc.path.clone()) {
                 Entry::Vacant(v) => {
                     v.insert(fc);
@@ -161,8 +297,17 @@ impl CoverageSnapshot {
                     let existing = o.get_mut();
                     let mut combined = std::mem::take(&mut existing.line_hits);
                     combined.extend(fc.line_hits);
-                    *existing =
-                        FileCoverage::new(existing.path.clone(), existing.language, combined);
+                    let mut combined_branches = std::mem::take(&mut existing.branches);
+                    combined_branches.extend(fc.branches);
+                    let mut combined_functions = std::mem::take(&mut existing.functions);
+                    combined_functions.extend(fc.functions);
+                    *existing = FileCoverage::detailed(
+                        existing.path.clone(),
+                        existing.language,
+                        combined,
+                        combined_branches,
+                        combined_functions,
+                    );
                 }
             }
         }
@@ -197,6 +342,48 @@ impl CoverageSnapshot {
     /// Total coverage percentage, `None` when there are no executable lines.
     pub fn coverage_pct(&self) -> Option<f64> {
         coverage_pct(self.covered_lines(), self.executable_lines())
+    }
+
+    /// Total branches across all files.
+    pub fn total_branches(&self) -> u64 {
+        self.files
+            .iter()
+            .map(|f| u64::from(f.total_branches()))
+            .sum()
+    }
+
+    /// Total covered branches across all files.
+    pub fn covered_branches(&self) -> u64 {
+        self.files
+            .iter()
+            .map(|f| u64::from(f.covered_branches()))
+            .sum()
+    }
+
+    /// Total branch coverage percentage, `None` when there are no branches.
+    pub fn branch_pct(&self) -> Option<f64> {
+        coverage_pct(self.covered_branches(), self.total_branches())
+    }
+
+    /// Total instrumented functions across all files.
+    pub fn total_functions(&self) -> u64 {
+        self.files
+            .iter()
+            .map(|f| u64::from(f.total_functions()))
+            .sum()
+    }
+
+    /// Total covered functions across all files.
+    pub fn covered_functions(&self) -> u64 {
+        self.files
+            .iter()
+            .map(|f| u64::from(f.covered_functions()))
+            .sum()
+    }
+
+    /// Total function coverage percentage, `None` when there are no functions.
+    pub fn function_pct(&self) -> Option<f64> {
+        coverage_pct(self.covered_functions(), self.total_functions())
     }
 }
 
@@ -298,5 +485,144 @@ mod tests {
         assert_eq!(snap, back);
         assert!(json.contains("\"language\": \"python\""));
         assert_eq!(back.schema_version, SCHEMA_VERSION);
+    }
+
+    fn branch(line: u32, branch: &str, taken: Option<u64>) -> BranchHit {
+        BranchHit {
+            line,
+            block: "0".to_string(),
+            branch: branch.to_string(),
+            taken,
+        }
+    }
+
+    #[test]
+    fn merges_branch_taken_counts_with_lcov_dash_rule() {
+        let fc = FileCoverage::detailed(
+            "a.py".to_string(),
+            Language::Python,
+            vec![LineHit { line: 1, hits: 1 }],
+            vec![
+                branch(2, "0", None),
+                branch(2, "0", Some(2)),
+                branch(2, "1", None),
+                branch(2, "1", None),
+                branch(2, "2", Some(0)),
+            ],
+            Vec::new(),
+        );
+        assert_eq!(
+            fc.branches,
+            vec![
+                branch(2, "0", Some(2)),
+                branch(2, "1", None),
+                branch(2, "2", Some(0)),
+            ]
+        );
+        assert_eq!(fc.total_branches(), 3);
+        assert_eq!(fc.covered_branches(), 1);
+        let pct = fc.branch_pct().unwrap();
+        assert!((pct - 33.333_333).abs() < 0.001);
+    }
+
+    #[test]
+    fn merges_functions_by_name_and_keeps_smallest_known_line() {
+        let fc = FileCoverage::detailed(
+            "a.py".to_string(),
+            Language::Python,
+            Vec::new(),
+            Vec::new(),
+            vec![
+                FunctionHit {
+                    name: "main".to_string(),
+                    line: 0,
+                    hits: 1,
+                },
+                FunctionHit {
+                    name: "main".to_string(),
+                    line: 4,
+                    hits: 2,
+                },
+                FunctionHit {
+                    name: "helper".to_string(),
+                    line: 9,
+                    hits: 0,
+                },
+            ],
+        );
+        assert_eq!(
+            fc.functions,
+            vec![
+                FunctionHit {
+                    name: "helper".to_string(),
+                    line: 9,
+                    hits: 0,
+                },
+                FunctionHit {
+                    name: "main".to_string(),
+                    line: 4,
+                    hits: 3,
+                },
+            ]
+        );
+        assert_eq!(fc.total_functions(), 2);
+        assert_eq!(fc.covered_functions(), 1);
+    }
+
+    #[test]
+    fn snapshot_merges_branches_and_functions_across_duplicate_paths() {
+        let snap = snapshot_with(vec![
+            FileCoverage::detailed(
+                "a.py".to_string(),
+                Language::Python,
+                vec![LineHit { line: 1, hits: 1 }],
+                vec![branch(1, "0", None)],
+                vec![FunctionHit {
+                    name: "main".to_string(),
+                    line: 1,
+                    hits: 1,
+                }],
+            ),
+            FileCoverage::detailed(
+                "a.py".to_string(),
+                Language::Python,
+                vec![LineHit { line: 1, hits: 1 }],
+                vec![branch(1, "0", Some(3)), branch(1, "1", Some(0))],
+                vec![FunctionHit {
+                    name: "main".to_string(),
+                    line: 1,
+                    hits: 2,
+                }],
+            ),
+        ]);
+        assert_eq!(snap.files.len(), 1);
+        assert_eq!(
+            snap.files[0].branches,
+            vec![branch(1, "0", Some(3)), branch(1, "1", Some(0))]
+        );
+        assert_eq!(snap.total_branches(), 2);
+        assert_eq!(snap.covered_branches(), 1);
+        assert_eq!(snap.files[0].functions[0].hits, 3);
+        assert_eq!(snap.total_functions(), 1);
+        assert_eq!(snap.covered_functions(), 1);
+    }
+
+    #[test]
+    fn line_only_snapshots_stay_schema_compatible() {
+        let line_only = snapshot_with(vec![FileCoverage::new(
+            "a.py".to_string(),
+            Language::Python,
+            vec![LineHit { line: 1, hits: 1 }],
+        )]);
+        let json = serde_json::to_string_pretty(&line_only).unwrap();
+        assert!(!json.contains("\"branches\""));
+        assert!(!json.contains("\"functions\""));
+        assert_eq!(line_only.schema_version, SCHEMA_VERSION);
+
+        let back: CoverageSnapshot = serde_json::from_str(&json).unwrap();
+        assert!(back.files[0].branches.is_empty());
+        assert!(back.files[0].functions.is_empty());
+        assert_eq!(back.branch_pct(), None);
+        assert_eq!(back.function_pct(), None);
     }
 }
