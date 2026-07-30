@@ -90,6 +90,7 @@ pub(crate) fn git_diff_output(repo_root: &Path, range: &str) -> Result<String> {
             "--no-color",
             "--relative",
             "--unified=0",
+            "--find-renames",
             "--diff-filter=ACMR",
             range,
         ])
