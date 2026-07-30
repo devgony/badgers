@@ -142,7 +142,8 @@ fn render(pr: u64, document: &ComparisonAnalysisDocument) -> String {
 #[cfg(test)]
 mod tests {
     use badge_rs_core::compare::{
-        COMPARISON_SCHEMA_VERSION, Comparison, ComparisonAnalysis, Counts, DiffCoverage, FileDelta,
+        BranchDiffCoverage, COMPARISON_SCHEMA_VERSION, Comparison, ComparisonAnalysis, Counts,
+        DiffCoverage, FileDelta,
     };
 
     use super::*;
@@ -169,6 +170,9 @@ mod tests {
                                 covered: 1,
                                 executable: 2,
                             }),
+                            base_branches: None,
+                            head_branches: None,
+                            branch_diff: BranchDiffCoverage::default(),
                             diff: DiffCoverage {
                                 relevant: 1,
                                 covered: 0,
@@ -185,6 +189,9 @@ mod tests {
                                 covered: 1,
                                 executable: 3,
                             }),
+                            base_branches: None,
+                            head_branches: None,
+                            branch_diff: BranchDiffCoverage::default(),
                             diff: DiffCoverage {
                                 relevant: 3,
                                 covered: 1,

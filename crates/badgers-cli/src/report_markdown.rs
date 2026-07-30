@@ -647,7 +647,9 @@ fn short_sha(sha: &str) -> String {
 #[cfg(test)]
 mod tests {
     use badge_rs_core::ToolVersions;
-    use badge_rs_core::compare::{Comparison, Counts, CoverageScopeChange, DiffCoverage};
+    use badge_rs_core::compare::{
+        BranchDiffCoverage, Comparison, Counts, CoverageScopeChange, DiffCoverage,
+    };
 
     use super::*;
 
@@ -685,6 +687,9 @@ mod tests {
                     covered: 2,
                     executable: 4,
                 }),
+                base_branches: None,
+                head_branches: None,
+                branch_diff: BranchDiffCoverage::default(),
                 diff: DiffCoverage {
                     relevant: 3,
                     covered: 1,
@@ -732,6 +737,9 @@ mod tests {
                         covered: 1,
                         executable: 2,
                     }),
+                    base_branches: None,
+                    head_branches: None,
+                    branch_diff: BranchDiffCoverage::default(),
                     diff: DiffCoverage {
                         relevant: 2,
                         covered: 1,
@@ -745,6 +753,9 @@ mod tests {
                         covered: 2,
                         executable: 2,
                     }),
+                    base_branches: None,
+                    head_branches: None,
+                    branch_diff: BranchDiffCoverage::default(),
                     diff: DiffCoverage {
                         relevant: 2,
                         covered: 2,
@@ -856,6 +867,9 @@ mod tests {
                         covered: 2,
                         executable: 2,
                     }),
+                    base_branches: None,
+                    head_branches: None,
+                    branch_diff: BranchDiffCoverage::default(),
                     diff: DiffCoverage {
                         relevant: 1,
                         covered: 1,

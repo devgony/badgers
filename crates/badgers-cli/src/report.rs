@@ -754,7 +754,9 @@ mod tests {
     use std::io::Cursor;
     use std::process::Command;
 
-    use badge_rs_core::compare::{Comparison, Counts, CoverageScopeChange, DiffCoverage};
+    use badge_rs_core::compare::{
+        BranchDiffCoverage, Comparison, Counts, CoverageScopeChange, DiffCoverage,
+    };
     use badge_rs_core::{Language, LineHit, ToolVersions};
 
     use super::*;
@@ -787,6 +789,9 @@ mod tests {
                         covered: 2,
                         executable: 2,
                     }),
+                    base_branches: None,
+                    head_branches: None,
+                    branch_diff: BranchDiffCoverage::default(),
                     diff: DiffCoverage {
                         relevant: 1,
                         covered: 1,

@@ -40,6 +40,28 @@ impl Counts {
     }
 }
 
+/// Branch outcome counts for one side of a file comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchCounts {
+    pub covered: u64,
+    pub total: u64,
+}
+
+impl BranchCounts {
+    /// `None` when the file carries no branch data (older snapshots or
+    /// line-only coverage tools).
+    fn of(file: &FileCoverage) -> Option<Self> {
+        (file.total_branches() > 0).then(|| Self {
+            covered: u64::from(file.covered_branches()),
+            total: u64::from(file.total_branches()),
+        })
+    }
+
+    pub fn pct(&self) -> Option<f64> {
+        coverage_pct(self.covered, self.total)
+    }
+}
+
 /// Diff coverage for one file: changed executable lines and how many of
 /// them are covered.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +77,28 @@ impl DiffCoverage {
     }
 }
 
+/// Branch diff coverage for one file: branches sitting on changed executable
+/// lines and how many of them were taken.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BranchDiffCoverage {
+    pub relevant: u32,
+    pub covered: u32,
+    /// Changed lines that executed but still have at least one branch that
+    /// was never taken.
+    pub partial_lines: Vec<u32>,
+}
+
+impl BranchDiffCoverage {
+    pub fn is_empty(&self) -> bool {
+        self.relevant == 0 && self.partial_lines.is_empty()
+    }
+
+    pub fn pct(&self) -> Option<f64> {
+        coverage_pct(u64::from(self.covered), u64::from(self.relevant))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileDelta {
     pub path: String,
@@ -63,6 +107,13 @@ pub struct FileDelta {
     /// `None` when the file was removed in head.
     pub head: Option<Counts>,
     pub diff: DiffCoverage,
+    /// Additive fields; absent in comparisons written before branch support.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_branches: Option<BranchCounts>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_branches: Option<BranchCounts>,
+    #[serde(default, skip_serializing_if = "BranchDiffCoverage::is_empty")]
+    pub branch_diff: BranchDiffCoverage,
 }
 
 impl FileDelta {
@@ -173,6 +224,33 @@ impl Comparison {
         }
         total
     }
+
+    /// `None` when no head file carries branch data.
+    pub fn head_branch_totals(&self) -> Option<BranchCounts> {
+        accumulate_branches(self.files.iter().filter_map(|f| f.head_branches))
+    }
+
+    /// `None` when no base file carries branch data.
+    pub fn base_branch_totals(&self) -> Option<BranchCounts> {
+        accumulate_branches(self.files.iter().filter_map(|f| f.base_branches))
+    }
+
+    /// `None` without a baseline or when either side lacks branch data.
+    pub fn branch_delta_pct(&self) -> Option<f64> {
+        if !self.base_available {
+            return None;
+        }
+        Some(self.head_branch_totals()?.pct()? - self.base_branch_totals()?.pct()?)
+    }
+
+    pub fn branch_diff_totals(&self) -> BranchDiffCoverage {
+        let mut total = BranchDiffCoverage::default();
+        for file in &self.files {
+            total.relevant += file.branch_diff.relevant;
+            total.covered += file.branch_diff.covered;
+        }
+        total
+    }
 }
 
 impl ComparisonAnalysis {
@@ -200,6 +278,13 @@ impl ComparisonAnalysis {
 
     pub fn diff_totals(&self) -> DiffCoverage {
         self.comparison.diff_totals()
+    }
+
+    pub fn branch_delta_pct(&self) -> Option<f64> {
+        if self.scope_changed() {
+            return None;
+        }
+        self.comparison.branch_delta_pct()
     }
 
     pub fn scope_changed(&self) -> bool {
@@ -242,6 +327,19 @@ fn accumulate(counts: impl Iterator<Item = Counts>) -> Counts {
             executable: acc.executable + c.executable,
         },
     )
+}
+
+fn accumulate_branches(counts: impl Iterator<Item = BranchCounts>) -> Option<BranchCounts> {
+    counts.fold(None, |acc, c| {
+        let acc = acc.unwrap_or(BranchCounts {
+            covered: 0,
+            total: 0,
+        });
+        Some(BranchCounts {
+            covered: acc.covered + c.covered,
+            total: acc.total + c.total,
+        })
+    })
 }
 
 pub fn compare(
@@ -295,13 +393,15 @@ fn build_comparison(
 
     for head_file in &head.files {
         seen.insert(head_file.path.as_str());
+        let base_file = base_files.get(head_file.path.as_str());
         files.push(FileDelta {
             path: head_file.path.clone(),
-            base: base_files
-                .get(head_file.path.as_str())
-                .map(|f| Counts::of(f)),
+            base: base_file.map(|f| Counts::of(f)),
             head: Some(Counts::of(head_file)),
             diff: diff_coverage(head_file, changed),
+            base_branches: base_file.and_then(|f| BranchCounts::of(f)),
+            head_branches: BranchCounts::of(head_file),
+            branch_diff: branch_diff_coverage(head_file, changed),
         });
     }
 
@@ -316,6 +416,9 @@ fn build_comparison(
                     covered: 0,
                     uncovered_lines: Vec::new(),
                 },
+                base_branches: BranchCounts::of(base_file),
+                head_branches: None,
+                branch_diff: BranchDiffCoverage::default(),
             });
         }
     }
@@ -379,6 +482,39 @@ fn diff_coverage(file: &FileCoverage, changed: &ChangedLines) -> DiffCoverage {
         covered,
         uncovered_lines,
     }
+}
+
+/// Branches on changed executable lines. `partial_lines` lists changed lines
+/// that executed but still miss at least one branch outcome; lines that never
+/// executed are already reported as uncovered lines.
+fn branch_diff_coverage(file: &FileCoverage, changed: &ChangedLines) -> BranchDiffCoverage {
+    let Some(changed_lines) = changed.for_path(&file.path) else {
+        return BranchDiffCoverage::default();
+    };
+    if file.branches.is_empty() {
+        return BranchDiffCoverage::default();
+    }
+    let executed: BTreeSet<u32> = file
+        .line_hits
+        .iter()
+        .filter(|lh| lh.hits > 0)
+        .map(|lh| lh.line)
+        .collect();
+    let mut totals = BranchDiffCoverage::default();
+    let mut partial: BTreeSet<u32> = BTreeSet::new();
+    for branch in &file.branches {
+        if !changed_lines.contains(&branch.line) {
+            continue;
+        }
+        totals.relevant += 1;
+        if branch.is_covered() {
+            totals.covered += 1;
+        } else if executed.contains(&branch.line) {
+            partial.insert(branch.line);
+        }
+    }
+    totals.partial_lines = partial.into_iter().collect();
+    totals
 }
 
 #[cfg(test)]
@@ -463,6 +599,123 @@ mod tests {
         assert!(!comparison.base_available);
         assert_eq!(comparison.delta_pct(), None);
         assert_eq!(comparison.head_totals().pct().unwrap(), 100.0);
+    }
+
+    fn branch(line: u32, branch: &str, taken: Option<u64>) -> crate::BranchHit {
+        crate::BranchHit {
+            line,
+            block: "0".to_string(),
+            branch: branch.to_string(),
+            taken,
+        }
+    }
+
+    fn file_with_branches(
+        path: &str,
+        hits: &[(u32, u64)],
+        branches: Vec<crate::BranchHit>,
+    ) -> FileCoverage {
+        FileCoverage::detailed(
+            path.into(),
+            Language::from_path(path),
+            hits.iter()
+                .map(|&(line, hits)| LineHit { line, hits })
+                .collect(),
+            branches,
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn computes_branch_delta_and_changed_branch_coverage() {
+        let base = snapshot(vec![file_with_branches(
+            "a.py",
+            &[(1, 1), (2, 1)],
+            vec![branch(2, "0", Some(1)), branch(2, "1", Some(0))],
+        )]);
+        let head = snapshot(vec![file_with_branches(
+            "a.py",
+            &[(1, 1), (2, 1), (3, 1)],
+            vec![
+                branch(2, "0", Some(1)),
+                branch(2, "1", Some(1)),
+                branch(3, "0", Some(1)),
+                branch(3, "1", Some(0)),
+            ],
+        )]);
+        let comparison = compare(Some(&base), &head, &changed("a.py", &[2, 3]));
+
+        let delta = &comparison.files[0];
+        assert_eq!(
+            delta.base_branches,
+            Some(BranchCounts {
+                covered: 1,
+                total: 2
+            })
+        );
+        assert_eq!(
+            delta.head_branches,
+            Some(BranchCounts {
+                covered: 3,
+                total: 4
+            })
+        );
+        assert_eq!(delta.branch_diff.relevant, 4);
+        assert_eq!(delta.branch_diff.covered, 3);
+        assert_eq!(delta.branch_diff.partial_lines, vec![3]);
+        assert!((comparison.branch_delta_pct().unwrap() - 25.0).abs() < 0.001);
+
+        let totals = comparison.branch_diff_totals();
+        assert_eq!(totals.relevant, 4);
+        assert_eq!(totals.covered, 3);
+    }
+
+    #[test]
+    fn unexecuted_changed_lines_are_not_branch_partial() {
+        let head = snapshot(vec![file_with_branches(
+            "a.py",
+            &[(2, 0)],
+            vec![branch(2, "0", None), branch(2, "1", None)],
+        )]);
+        let comparison = compare(None, &head, &changed("a.py", &[2]));
+
+        let delta = &comparison.files[0];
+        assert_eq!(delta.branch_diff.relevant, 2);
+        assert_eq!(delta.branch_diff.covered, 0);
+        assert!(delta.branch_diff.partial_lines.is_empty());
+        assert_eq!(delta.diff.uncovered_lines, vec![2]);
+    }
+
+    #[test]
+    fn branch_delta_requires_branch_data_on_both_sides() {
+        let base = snapshot(vec![file("a.py", &[(1, 1)])]);
+        let head = snapshot(vec![file_with_branches(
+            "a.py",
+            &[(1, 1)],
+            vec![branch(1, "0", Some(1))],
+        )]);
+        let comparison = compare(Some(&base), &head, &ChangedLines::default());
+
+        assert!(comparison.head_branch_totals().is_some());
+        assert_eq!(comparison.base_branch_totals(), None);
+        assert_eq!(comparison.branch_delta_pct(), None);
+    }
+
+    #[test]
+    fn legacy_file_delta_json_defaults_branch_fields() {
+        let json = r#"{
+            "path": "a.py",
+            "base": null,
+            "head": {"covered": 1, "executable": 2},
+            "diff": {"relevant": 0, "covered": 0, "uncovered_lines": []}
+        }"#;
+        let delta: FileDelta = serde_json::from_str(json).unwrap();
+        assert_eq!(delta.base_branches, None);
+        assert_eq!(delta.head_branches, None);
+        assert!(delta.branch_diff.is_empty());
+
+        let round_trip = serde_json::to_string(&delta).unwrap();
+        assert!(!round_trip.contains("branch"));
     }
 
     #[test]
@@ -566,6 +819,35 @@ mod tests {
                 .delta_pct(),
             Some(0.0)
         );
+    }
+
+    #[test]
+    fn scope_change_suppresses_branch_delta() {
+        let base = snapshot(vec![
+            file_with_branches("steady.py", &[(1, 1)], vec![branch(1, "0", Some(1))]),
+            file("disappeared.py", &[(1, 1)]),
+        ]);
+        let head = snapshot(vec![
+            file_with_branches("steady.py", &[(1, 1)], vec![branch(1, "0", Some(1))]),
+            file("appeared.py", &[(1, 0)]),
+        ]);
+        let tree = BTreeSet::from([
+            "appeared.py".to_string(),
+            "disappeared.py".to_string(),
+            "steady.py".to_string(),
+        ]);
+
+        let analysis = compare_with_source_trees(
+            Some(&base),
+            &head,
+            &ChangedLines::default(),
+            Some(&tree),
+            Some(&tree),
+        );
+
+        assert!(analysis.scope_changed());
+        assert_eq!(analysis.branch_delta_pct(), None);
+        assert!(analysis.comparison.branch_delta_pct().is_some());
     }
 
     #[test]

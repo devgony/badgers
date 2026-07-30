@@ -585,7 +585,7 @@ fn comment_marker(args: &GithubArgs) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use badge_rs_core::compare::{Comparison, Counts, DiffCoverage, FileDelta};
+    use badge_rs_core::compare::{BranchDiffCoverage, Comparison, Counts, DiffCoverage, FileDelta};
 
     use super::*;
 
@@ -624,6 +624,9 @@ mod tests {
                     covered: 3,
                     executable: 4,
                 }),
+                base_branches: None,
+                head_branches: None,
+                branch_diff: BranchDiffCoverage::default(),
                 diff: DiffCoverage {
                     relevant: 3,
                     covered: 1,
