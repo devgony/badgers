@@ -830,14 +830,22 @@ runs:
         fi
 
         if [ "$BADGERS_FAIL_ON_PARTIAL_BRANCHES" = "true" ]; then
-          PARTIAL=$(jq \
-            '[.comparison.files[]? | (.branch_diff.partial_lines // [] | unique | length)] | add // 0' \
+          MEASURED=$(jq \
+            '[.comparison.files[]? | select(.head_branches != null)] | length' \
             "$BADGERS_COMPARISON")
-          if [ "$PARTIAL" -eq 0 ]; then
-            echo "badgers: no changed lines with partially covered branches"
-          else
-            echo "::error::badgers: $PARTIAL changed lines with partially covered branches (fail-on-partial-branches is enabled)"
+          if [ "$MEASURED" -eq 0 ]; then
+            echo "::error::fail-on-partial-branches is enabled but the coverage report contains no branch data; enable branch instrumentation in coverage-command"
             FAILED=1
+          else
+            PARTIAL=$(jq \
+              '[.comparison.files[]? | (.branch_diff.partial_lines // [] | unique | length)] | add // 0' \
+              "$BADGERS_COMPARISON")
+            if [ "$PARTIAL" -eq 0 ]; then
+              echo "badgers: no changed lines with partially covered branches"
+            else
+              echo "::error::badgers: $PARTIAL changed lines with partially covered branches (fail-on-partial-branches is enabled)"
+              FAILED=1
+            fi
           fi
         fi
 

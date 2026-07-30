@@ -76,6 +76,12 @@ pub fn run(args: &CovArgs) -> Result<ExitCode> {
     let base = args.baseline.as_deref().map(read_snapshot).transpose()?;
     let mut comparison = compare(base.as_ref(), &head, &changed);
     filter_comparison(&mut comparison, &args.path);
+    ensure!(
+        !args.fail_on_partial_branches || comparison.head_branch_totals().is_some(),
+        "--fail-on-partial-branches requires branch data in the coverage report; \
+enable branch instrumentation (e.g. `coverage run --branch`, `flutter test \
+--branch-coverage`) or drop the flag"
+    );
 
     let branch = git_output(
         &repo_root,
