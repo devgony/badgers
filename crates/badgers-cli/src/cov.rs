@@ -499,6 +499,37 @@ src/lib.rs:10 [branch-partial]\n"
     }
 
     #[test]
+    fn renders_function_totals_and_lost_coverage() {
+        let file = |line11_hits: u64, fn_hits: u64| {
+            FileCoverage::detailed(
+                "src/lib.rs".into(),
+                Language::Rust,
+                vec![
+                    LineHit { line: 10, hits: 1 },
+                    LineHit {
+                        line: 11,
+                        hits: line11_hits,
+                    },
+                ],
+                Vec::new(),
+                vec![badge_rs_core::FunctionHit {
+                    name: "f".into(),
+                    line: 10,
+                    hits: fn_hits,
+                }],
+            )
+        };
+        let base = snapshot(vec![file(1, 0)]);
+        let head = snapshot(vec![file(0, 1)]);
+        let comparison = compare(Some(&base), &head, &ChangedLines::default());
+
+        let rendered = render_comparison("Local: main @ 0123456", &comparison);
+        assert!(rendered.contains("Function coverage: 100.00% (+100.00pp)"));
+        assert!(rendered.contains("Lost coverage: 1 unchanged line"));
+        assert!(rendered.contains("src/lib.rs:11 [lost-coverage]"));
+    }
+
+    #[test]
     fn renders_repo_wide_uncovered_lines() {
         let comparison = comparison_with_uncovered_line();
         assert_eq!(

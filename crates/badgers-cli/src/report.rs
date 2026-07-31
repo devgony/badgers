@@ -589,6 +589,20 @@ fn render_index(head: &CoverageSnapshot, comparison: &ComparisonAnalysis) -> Str
             )
         })
         .unwrap_or_default();
+    let function_card = comparison
+        .head_function_totals()
+        .map(|function_totals| {
+            format!(
+                r#"<div class="card"><div class="label">Function coverage</div>
+<div class="value">{pct}</div>
+<div class="sub">{covered}/{total} functions</div></div>
+"#,
+                pct = fmt_pct(function_totals.pct()),
+                covered = function_totals.covered,
+                total = function_totals.total,
+            )
+        })
+        .unwrap_or_default();
 
     format!(
         r#"<!DOCTYPE html>
@@ -605,7 +619,7 @@ fn render_index(head: &CoverageSnapshot, comparison: &ComparisonAnalysis) -> Str
 <div class="card"><div class="label">Diff coverage (changed lines)</div>
 <div class="value">{diff_pct}</div>
 <div class="sub">{diff_covered}/{diff_relevant} changed executable lines</div></div>
-{branch_card}</div>
+{branch_card}{function_card}</div>
 {scope_notice}
 <div class="tree">
 <div class="row header">
@@ -815,6 +829,9 @@ mod tests {
                     base_branches: None,
                     head_branches: None,
                     branch_diff: BranchDiffCoverage::default(),
+                    base_functions: None,
+                    head_functions: None,
+                    lost_lines: Vec::new(),
                     diff: DiffCoverage {
                         relevant: 1,
                         covered: 1,
@@ -872,6 +889,9 @@ mod tests {
                     covered: 1,
                     partial_lines: vec![7],
                 },
+                base_functions: None,
+                head_functions: None,
+                lost_lines: Vec::new(),
                 diff: DiffCoverage {
                     relevant: 0,
                     covered: 0,

@@ -192,6 +192,8 @@ struct DirAgg {
     base_executable: u64,
     diff_covered: u32,
     diff_relevant: u32,
+    branch_covered: u64,
+    branch_total: u64,
 }
 
 impl DirAgg {
@@ -206,6 +208,10 @@ impl DirAgg {
         }
         self.diff_covered += file.diff.covered;
         self.diff_relevant += file.diff.relevant;
+        if let Some(counts) = file.head_branches {
+            self.branch_covered += counts.covered;
+            self.branch_total += counts.total;
+        }
     }
 
     fn merge(&mut self, other: Self) {
@@ -215,6 +221,8 @@ impl DirAgg {
         self.base_executable += other.base_executable;
         self.diff_covered += other.diff_covered;
         self.diff_relevant += other.diff_relevant;
+        self.branch_covered += other.branch_covered;
+        self.branch_total += other.branch_total;
     }
 
     fn delta_pct(&self, base_available: bool) -> Option<f64> {
@@ -308,6 +316,20 @@ fn render(
             );
         }
     }
+    if let Some(function_totals) = comparison.head_function_totals() {
+        let _ = writeln!(
+            out,
+            "| **Functions** | {} ({}/{}) | {} |",
+            fmt_pct(function_totals.pct()),
+            function_totals.covered,
+            function_totals.total,
+            fmt_delta(
+                comparison.function_delta_pct(),
+                comparison.base_available,
+                comparison.scope_changed()
+            )
+        );
+    }
     let _ = writeln!(
         out,
         "| **Changed lines** | {} | — |\n",
@@ -344,9 +366,19 @@ fn render_tree(
         let agg = aggregate(child, &comparison.files);
         let open = if depth == 0 { " open" } else { "" };
         let indent = "&#x2003;".repeat(depth);
+        let branch_summary = if agg.branch_total > 0 {
+            format!(
+                " · Branches {} ({}/{})",
+                fmt_pct(coverage_pct(agg.branch_covered, agg.branch_total)),
+                agg.branch_covered,
+                agg.branch_total
+            )
+        } else {
+            String::new()
+        };
         let _ = writeln!(
             out,
-            "<details{open}>\n<summary>{indent}📁 <strong>{}/</strong> — {} ({}/{}) · Δ {} · Diff {}</summary>\n",
+            "<details{open}>\n<summary>{indent}📁 <strong>{}/</strong> — {} ({}/{}) · Δ {} · Diff {}{branch_summary}</summary>\n",
             markdown_html_text(name),
             fmt_pct(coverage_pct(agg.head_covered, agg.head_executable)),
             agg.head_covered,
@@ -373,11 +405,20 @@ fn render_files(
     if indices.is_empty() {
         return;
     }
-    let _ = writeln!(
-        out,
-        "| File | Lines | Covered | Coverage | Δ | Diff coverage |"
-    );
-    let _ = writeln!(out, "|---|---:|---:|---:|---:|---:|");
+    let show_branches = comparison.head_branch_totals().is_some();
+    if show_branches {
+        let _ = writeln!(
+            out,
+            "| File | Lines | Covered | Coverage | Δ | Diff coverage | Branches |"
+        );
+        let _ = writeln!(out, "|---|---:|---:|---:|---:|---:|---:|");
+    } else {
+        let _ = writeln!(
+            out,
+            "| File | Lines | Covered | Coverage | Δ | Diff coverage |"
+        );
+        let _ = writeln!(out, "|---|---:|---:|---:|---:|---:|");
+    }
     for &idx in indices {
         let file = &comparison.files[idx];
         let (executable, covered, coverage) = match file.head {
@@ -388,9 +429,25 @@ fn render_files(
             ),
             None => ("—".to_string(), "—".to_string(), "removed".to_string()),
         };
+        let branch_cell = if show_branches {
+            let cell = file
+                .head_branches
+                .map(|counts| {
+                    format!(
+                        "{} ({}/{})",
+                        fmt_pct(counts.pct()),
+                        counts.covered,
+                        counts.total
+                    )
+                })
+                .unwrap_or_else(|| "—".to_string());
+            format!(" {cell} |")
+        } else {
+            String::new()
+        };
         let _ = writeln!(
             out,
-            "| {} | {executable} | {covered} | {coverage} | {} | {} |",
+            "| {} | {executable} | {covered} | {coverage} | {} | {} |{branch_cell}",
             if file.head.is_some() {
                 file_links(file, links)
             } else {
@@ -712,6 +769,9 @@ mod tests {
                 base_branches: None,
                 head_branches: None,
                 branch_diff: BranchDiffCoverage::default(),
+                base_functions: None,
+                head_functions: None,
+                lost_lines: Vec::new(),
                 diff: DiffCoverage {
                     relevant: 3,
                     covered: 1,
@@ -774,6 +834,9 @@ mod tests {
                     covered: 1,
                     partial_lines: vec![7],
                 },
+                base_functions: None,
+                head_functions: None,
+                lost_lines: Vec::new(),
                 diff: DiffCoverage {
                     relevant: 1,
                     covered: 1,
@@ -809,6 +872,9 @@ mod tests {
                     base_branches: None,
                     head_branches: None,
                     branch_diff: BranchDiffCoverage::default(),
+                    base_functions: None,
+                    head_functions: None,
+                    lost_lines: Vec::new(),
                     diff: DiffCoverage {
                         relevant: 2,
                         covered: 1,
@@ -825,6 +891,9 @@ mod tests {
                     base_branches: None,
                     head_branches: None,
                     branch_diff: BranchDiffCoverage::default(),
+                    base_functions: None,
+                    head_functions: None,
+                    lost_lines: Vec::new(),
                     diff: DiffCoverage {
                         relevant: 2,
                         covered: 2,
@@ -939,6 +1008,9 @@ mod tests {
                     base_branches: None,
                     head_branches: None,
                     branch_diff: BranchDiffCoverage::default(),
+                    base_functions: None,
+                    head_functions: None,
+                    lost_lines: Vec::new(),
                     diff: DiffCoverage {
                         relevant: 1,
                         covered: 1,

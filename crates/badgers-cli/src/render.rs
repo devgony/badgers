@@ -116,6 +116,25 @@ fn render_comparison_inner(
         }
     }
 
+    if let Some(function_totals) = comparison.head_function_totals() {
+        let _ = writeln!(
+            out,
+            "Function coverage: {} ({})",
+            format_pct(function_totals.pct()),
+            format_metric_delta(
+                comparison,
+                analysis,
+                comparison.function_delta_pct(),
+                "no function baseline"
+            )
+        );
+    }
+    let lost = comparison.lost_line_count();
+    if lost > 0 {
+        let noun = if lost == 1 { "line" } else { "lines" };
+        let _ = writeln!(out, "Lost coverage: {lost} unchanged {noun}");
+    }
+
     if let Some(analysis) = analysis.filter(|analysis| analysis.scope_changed()) {
         let _ = writeln!(out, "Coverage scope changed; aggregate delta suppressed");
         let (entries, omitted) = bounded_scope_entries(analysis);
@@ -170,6 +189,25 @@ fn render_comparison_inner(
             options.branch_marker
         );
     }
+
+    let mut lost_files: Vec<_> = comparison
+        .files
+        .iter()
+        .filter(|file| !file.lost_lines.is_empty())
+        .collect();
+    lost_files.sort_by(|a, b| a.path.cmp(&b.path));
+    for file in lost_files {
+        let mut lines = file.lost_lines.clone();
+        lines.sort_unstable();
+        lines.dedup();
+        let ranges = line_ranges(&lines);
+        let _ = writeln!(
+            out,
+            "{}:{} [lost-coverage]",
+            escape_path(&file.path),
+            ranges.join(",")
+        );
+    }
     out
 }
 
@@ -217,16 +255,29 @@ fn format_delta(comparison: &Comparison, analysis: Option<&ComparisonAnalysis>) 
 }
 
 fn format_branch_delta(comparison: &Comparison, analysis: Option<&ComparisonAnalysis>) -> String {
+    format_metric_delta(
+        comparison,
+        analysis,
+        comparison.branch_delta_pct(),
+        "no branch baseline",
+    )
+}
+
+fn format_metric_delta(
+    comparison: &Comparison,
+    analysis: Option<&ComparisonAnalysis>,
+    delta: Option<f64>,
+    missing_baseline: &str,
+) -> String {
     if !comparison.base_available {
         return "no baseline".into();
     }
     if analysis.is_some_and(ComparisonAnalysis::scope_changed) {
         return "coverage scope changed".into();
     }
-    comparison
-        .branch_delta_pct()
+    delta
         .map(|delta| format!("{delta:+.2}pp"))
-        .unwrap_or_else(|| "no branch baseline".into())
+        .unwrap_or_else(|| missing_baseline.into())
 }
 
 pub(crate) fn bounded_scope_entries(
