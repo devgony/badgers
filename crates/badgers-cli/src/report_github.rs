@@ -298,9 +298,19 @@ fn build_annotations(
             } else {
                 format!("{prefix}/{}", file.path)
             };
+            let uncovered_path = path.clone();
             line_number_ranges(&file.diff.uncovered_lines)
                 .into_iter()
-                .map(move |(start, end)| CheckAnnotation::warning(path.clone(), start, end))
+                .map(move |(start, end)| {
+                    CheckAnnotation::warning(uncovered_path.clone(), start, end)
+                })
+                .chain(
+                    line_number_ranges(&file.branch_diff.partial_lines)
+                        .into_iter()
+                        .map(move |(start, end)| {
+                            CheckAnnotation::partial_branches(path.clone(), start, end)
+                        }),
+                )
         })
         .collect::<Vec<_>>();
     let total = all.len();
@@ -368,6 +378,20 @@ fn render_comment(marker: &str, comparison: &ComparisonAnalysis, args: &GithubAr
             );
         }
     }
+    if let Some(function_totals) = comparison.head_function_totals() {
+        let _ = writeln!(
+            out,
+            "| **Function** | {} ({}/{}) | {} |",
+            fmt_pct(function_totals.pct()),
+            function_totals.covered,
+            function_totals.total,
+            fmt_delta(
+                comparison.function_delta_pct(),
+                comparison.base_available,
+                comparison.scope_changed()
+            ),
+        );
+    }
     let _ = writeln!(out);
 
     render_scope_change(&mut out, comparison);
@@ -385,6 +409,7 @@ fn render_comment(marker: &str, comparison: &ComparisonAnalysis, args: &GithubAr
 
     render_uncovered(&mut out, comparison);
     render_partial_branches(&mut out, comparison);
+    render_lost_coverage(&mut out, comparison);
 
     let mut links = Vec::new();
     if let Some(url) = args
@@ -514,6 +539,41 @@ fn render_partial_branches(out: &mut String, comparison: &ComparisonAnalysis) {
     let _ = writeln!(out);
     for file in files {
         let ranges = line_ranges(&file.branch_diff.partial_lines);
+        let shown: Vec<String> = ranges.iter().take(MAX_RANGES_PER_FILE).cloned().collect();
+        let suffix = if ranges.len() > MAX_RANGES_PER_FILE {
+            format!(" … and {} more", ranges.len() - MAX_RANGES_PER_FILE)
+        } else {
+            String::new()
+        };
+        let _ = writeln!(
+            out,
+            "- {}: {}{}",
+            markdown_code_path(&file.path),
+            shown.join(", "),
+            suffix
+        );
+    }
+    let _ = writeln!(out, "</details>");
+}
+
+fn render_lost_coverage(out: &mut String, comparison: &ComparisonAnalysis) {
+    let files: Vec<_> = comparison
+        .files
+        .iter()
+        .filter(|f| !f.lost_lines.is_empty())
+        .collect();
+    if files.is_empty() {
+        return;
+    }
+    let total: usize = files.iter().map(|f| f.lost_lines.len()).sum();
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "<details><summary>Unchanged lines that lost coverage ({total})</summary>"
+    );
+    let _ = writeln!(out);
+    for file in files {
+        let ranges = line_ranges(&file.lost_lines);
         let shown: Vec<String> = ranges.iter().take(MAX_RANGES_PER_FILE).cloned().collect();
         let suffix = if ranges.len() > MAX_RANGES_PER_FILE {
             format!(" … and {} more", ranges.len() - MAX_RANGES_PER_FILE)
@@ -690,6 +750,9 @@ mod tests {
                 base_branches: None,
                 head_branches: None,
                 branch_diff: BranchDiffCoverage::default(),
+                base_functions: None,
+                head_functions: None,
+                lost_lines: Vec::new(),
                 diff: DiffCoverage {
                     relevant: 3,
                     covered: 1,
@@ -731,12 +794,24 @@ mod tests {
             covered: 1,
             partial_lines: vec![8, 9],
         };
+        file.base_functions = Some(badge_rs_core::compare::FunctionCounts {
+            covered: 1,
+            total: 2,
+        });
+        file.head_functions = Some(badge_rs_core::compare::FunctionCounts {
+            covered: 2,
+            total: 2,
+        });
+        file.lost_lines = vec![20];
 
         let body = render_comment("<!-- m -->", &analysis, &args());
         assert!(body.contains("| **Branch** | 75.00% (3/4) | 🟢 +25.00%p |"));
         assert!(body.contains("| **Branch diff** | 50.00% (1/2) | |"));
+        assert!(body.contains("| **Function** | 100.00% (2/2) | 🟢 +50.00%p |"));
         assert!(body.contains("Changed lines with partially covered branches (2)"));
         assert!(body.contains("- <code>pkg/calc.py</code>: L8-L9"));
+        assert!(body.contains("Unchanged lines that lost coverage (1)"));
+        assert!(body.contains("- <code>pkg/calc.py</code>: L20"));
 
         let line_only = render_comment("<!-- m -->", &comparison(), &args());
         assert!(!line_only.contains("**Branch**"));

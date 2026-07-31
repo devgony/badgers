@@ -43,6 +43,22 @@ impl CheckAnnotation {
             title: "Uncovered changed lines".to_string(),
         }
     }
+
+    pub fn partial_branches(path: impl Into<String>, start_line: u32, end_line: u32) -> Self {
+        let (lines, verb) = if start_line == end_line {
+            (format!("line {start_line}"), "has")
+        } else {
+            (format!("lines {start_line}-{end_line}"), "have")
+        };
+        Self {
+            path: path.into(),
+            start_line,
+            end_line,
+            annotation_level: "warning",
+            message: format!("Changed {lines} {verb} partially covered branches."),
+            title: "Partially covered branches".to_string(),
+        }
+    }
 }
 
 pub struct GithubClient {
@@ -578,6 +594,21 @@ mod tests {
             .unwrap();
         assert_eq!(id, 7);
         create.assert();
+    }
+
+    #[test]
+    fn partial_branch_annotations_have_distinct_title_and_message() {
+        let single = CheckAnnotation::partial_branches("src/lib.rs", 7, 7);
+        assert_eq!(single.title, "Partially covered branches");
+        assert_eq!(
+            single.message,
+            "Changed line 7 has partially covered branches."
+        );
+        let range = CheckAnnotation::partial_branches("src/lib.rs", 7, 9);
+        assert_eq!(
+            range.message,
+            "Changed lines 7-9 have partially covered branches."
+        );
     }
 
     #[test]
