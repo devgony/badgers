@@ -62,6 +62,27 @@ impl BranchCounts {
     }
 }
 
+/// Function outcome counts for one side of a file comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionCounts {
+    pub covered: u64,
+    pub total: u64,
+}
+
+impl FunctionCounts {
+    /// `None` when the file carries no function data.
+    fn of(file: &FileCoverage) -> Option<Self> {
+        (file.total_functions() > 0).then(|| Self {
+            covered: u64::from(file.covered_functions()),
+            total: u64::from(file.total_functions()),
+        })
+    }
+
+    pub fn pct(&self) -> Option<f64> {
+        coverage_pct(self.covered, self.total)
+    }
+}
+
 /// Diff coverage for one file: changed executable lines and how many of
 /// them are covered.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,6 +135,14 @@ pub struct FileDelta {
     pub head_branches: Option<BranchCounts>,
     #[serde(default, skip_serializing_if = "BranchDiffCoverage::is_empty")]
     pub branch_diff: BranchDiffCoverage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_functions: Option<FunctionCounts>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_functions: Option<FunctionCounts>,
+    /// Unchanged executable lines that were covered in base but lost
+    /// coverage in head.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lost_lines: Vec<u32>,
 }
 
 impl FileDelta {
@@ -251,6 +280,29 @@ impl Comparison {
         }
         total
     }
+
+    /// `None` when no head file carries function data.
+    pub fn head_function_totals(&self) -> Option<FunctionCounts> {
+        accumulate_functions(self.files.iter().filter_map(|f| f.head_functions))
+    }
+
+    /// `None` when no base file carries function data.
+    pub fn base_function_totals(&self) -> Option<FunctionCounts> {
+        accumulate_functions(self.files.iter().filter_map(|f| f.base_functions))
+    }
+
+    /// `None` without a baseline or when either side lacks function data.
+    pub fn function_delta_pct(&self) -> Option<f64> {
+        if !self.base_available {
+            return None;
+        }
+        Some(self.head_function_totals()?.pct()? - self.base_function_totals()?.pct()?)
+    }
+
+    /// Count of unchanged lines that lost coverage relative to the baseline.
+    pub fn lost_line_count(&self) -> usize {
+        self.files.iter().map(|f| f.lost_lines.len()).sum()
+    }
 }
 
 impl ComparisonAnalysis {
@@ -285,6 +337,13 @@ impl ComparisonAnalysis {
             return None;
         }
         self.comparison.branch_delta_pct()
+    }
+
+    pub fn function_delta_pct(&self) -> Option<f64> {
+        if self.scope_changed() {
+            return None;
+        }
+        self.comparison.function_delta_pct()
     }
 
     pub fn scope_changed(&self) -> bool {
@@ -336,6 +395,19 @@ fn accumulate_branches(counts: impl Iterator<Item = BranchCounts>) -> Option<Bra
             total: 0,
         });
         Some(BranchCounts {
+            covered: acc.covered + c.covered,
+            total: acc.total + c.total,
+        })
+    })
+}
+
+fn accumulate_functions(counts: impl Iterator<Item = FunctionCounts>) -> Option<FunctionCounts> {
+    counts.fold(None, |acc, c| {
+        let acc = acc.unwrap_or(FunctionCounts {
+            covered: 0,
+            total: 0,
+        });
+        Some(FunctionCounts {
             covered: acc.covered + c.covered,
             total: acc.total + c.total,
         })
@@ -402,6 +474,11 @@ fn build_comparison(
             base_branches: base_file.and_then(|f| BranchCounts::of(f)),
             head_branches: BranchCounts::of(head_file),
             branch_diff: branch_diff_coverage(head_file, changed),
+            base_functions: base_file.and_then(|f| FunctionCounts::of(f)),
+            head_functions: FunctionCounts::of(head_file),
+            lost_lines: base_file
+                .map(|f| lost_lines(f, head_file, changed))
+                .unwrap_or_default(),
         });
     }
 
@@ -419,6 +496,9 @@ fn build_comparison(
                 base_branches: BranchCounts::of(base_file),
                 head_branches: None,
                 branch_diff: BranchDiffCoverage::default(),
+                base_functions: FunctionCounts::of(base_file),
+                head_functions: None,
+                lost_lines: Vec::new(),
             });
         }
     }
@@ -482,6 +562,28 @@ fn diff_coverage(file: &FileCoverage, changed: &ChangedLines) -> DiffCoverage {
         covered,
         uncovered_lines,
     }
+}
+
+/// Unchanged executable lines that were covered in base but have zero hits in
+/// head. Changed lines are excluded: they are already reported through diff
+/// coverage.
+fn lost_lines(base: &FileCoverage, head: &FileCoverage, changed: &ChangedLines) -> Vec<u32> {
+    let changed_lines = changed.for_path(&head.path);
+    let covered_in_base: BTreeSet<u32> = base
+        .line_hits
+        .iter()
+        .filter(|lh| lh.hits > 0)
+        .map(|lh| lh.line)
+        .collect();
+    head.line_hits
+        .iter()
+        .filter(|lh| {
+            lh.hits == 0
+                && covered_in_base.contains(&lh.line)
+                && changed_lines.is_none_or(|lines| !lines.contains(&lh.line))
+        })
+        .map(|lh| lh.line)
+        .collect()
 }
 
 /// Branches on changed executable lines. `partial_lines` lists changed lines
@@ -684,6 +786,51 @@ mod tests {
         assert_eq!(delta.branch_diff.covered, 0);
         assert!(delta.branch_diff.partial_lines.is_empty());
         assert_eq!(delta.diff.uncovered_lines, vec![2]);
+    }
+
+    #[test]
+    fn computes_function_delta_and_lost_lines() {
+        let function = |hits: u64| crate::FunctionHit {
+            name: "main".to_string(),
+            line: 1,
+            hits,
+        };
+        let base = snapshot(vec![FileCoverage::detailed(
+            "a.py".into(),
+            Language::Python,
+            vec![
+                LineHit { line: 1, hits: 1 },
+                LineHit { line: 2, hits: 1 },
+                LineHit { line: 3, hits: 1 },
+            ],
+            Vec::new(),
+            vec![function(0)],
+        )]);
+        let head = snapshot(vec![FileCoverage::detailed(
+            "a.py".into(),
+            Language::Python,
+            vec![
+                LineHit { line: 1, hits: 1 },
+                LineHit { line: 2, hits: 0 },
+                LineHit { line: 3, hits: 0 },
+            ],
+            Vec::new(),
+            vec![function(2)],
+        )]);
+        let comparison = compare(Some(&base), &head, &changed("a.py", &[3]));
+
+        let delta = &comparison.files[0];
+        assert_eq!(delta.lost_lines, vec![2]);
+        assert_eq!(delta.diff.uncovered_lines, vec![3]);
+        assert_eq!(comparison.lost_line_count(), 1);
+        assert_eq!(
+            delta.head_functions,
+            Some(FunctionCounts {
+                covered: 1,
+                total: 1
+            })
+        );
+        assert!((comparison.function_delta_pct().unwrap() - 100.0).abs() < 0.001);
     }
 
     #[test]

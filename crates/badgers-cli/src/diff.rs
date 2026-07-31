@@ -173,6 +173,9 @@ mod tests {
                             base_branches: None,
                             head_branches: None,
                             branch_diff: BranchDiffCoverage::default(),
+                            base_functions: None,
+                            head_functions: None,
+                            lost_lines: Vec::new(),
                             diff: DiffCoverage {
                                 relevant: 1,
                                 covered: 0,
@@ -192,6 +195,9 @@ mod tests {
                             base_branches: None,
                             head_branches: None,
                             branch_diff: BranchDiffCoverage::default(),
+                            base_functions: None,
+                            head_functions: None,
+                            lost_lines: Vec::new(),
                             diff: DiffCoverage {
                                 relevant: 3,
                                 covered: 1,
