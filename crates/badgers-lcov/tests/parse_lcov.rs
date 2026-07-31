@@ -116,6 +116,34 @@ end_of_record
 }
 
 #[test]
+fn parses_mcdc_records_and_attributes_test_names() {
+    let input = "\
+TN:unit_suite
+SF:a.c
+DA:10,1
+MCDC:10,2,f,0,0,enable
+MCDC:10,2,t,1,0,enable
+MCDC:0,2,t,1,0,bad
+end_of_record
+TN:integration_suite
+SF:a.c
+DA:10,1
+end_of_record
+";
+    let outcome = parse_lcov(input, &opts(Path::new("/repo"))).unwrap();
+    assert_eq!(outcome.warnings.len(), 1);
+    assert!(outcome.warnings[0].contains("malformed MCDC"));
+    let file = &outcome.files[0];
+    assert_eq!(file.mcdc.len(), 2);
+    assert_eq!(file.covered_mcdc(), 1);
+    assert_eq!(file.mcdc[0].expression, "enable");
+    assert_eq!(
+        file.test_names,
+        vec!["integration_suite".to_string(), "unit_suite".to_string()]
+    );
+}
+
+#[test]
 fn warns_on_malformed_function_and_branch_records_without_failing() {
     let input = "\
 SF:a.py

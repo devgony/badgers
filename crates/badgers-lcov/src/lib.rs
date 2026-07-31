@@ -1,15 +1,16 @@
 //! LCOV parsing into badgers coverage models.
 //!
 //! Line records (`SF`, `DA`, `LF`, `LH`, `end_of_record`) are strict: malformed
-//! input fails the parse. Function (`FN`, `FNDA`, `FNF`, `FNH`) and branch
-//! (`BRDA`, `BRF`, `BRH`) records are best-effort: malformed entries are
-//! skipped with a warning so reports from older tools keep parsing. `TN`,
-//! `VER`, MC/DC records, and `DA` checksums are ignored.
+//! input fails the parse. Function (`FN`, `FNDA`, `FNF`, `FNH`), branch
+//! (`BRDA`, `BRF`, `BRH`), and MC/DC (`MCDC`) records are best-effort:
+//! malformed entries are skipped with a warning so reports from older tools
+//! keep parsing. `TN` names are attributed to the files they cover. `VER`,
+//! `MCF`/`MCH` summaries, and `DA` checksums are ignored.
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
 
-use badge_rs_core::{BranchHit, FileCoverage, FunctionHit, Language, LineHit};
+use badge_rs_core::{BranchHit, FileCoverage, FunctionHit, Language, LineHit, McdcHit};
 
 #[derive(Debug)]
 pub struct ParseOptions<'a> {
@@ -41,9 +42,11 @@ fn malformed(line: usize, message: impl Into<String>) -> LcovError {
 
 struct Block {
     raw_path: String,
+    test_name: Option<String>,
     hits: BTreeMap<u32, u64>,
     branches: BTreeMap<(u32, String, String), Option<u64>>,
     functions: BTreeMap<String, (u32, u64)>,
+    mcdc: BTreeMap<(u32, String, String, String, String), Option<u64>>,
     lf: Option<u64>,
     lh: Option<u64>,
     fnf: Option<u64>,
@@ -53,12 +56,14 @@ struct Block {
 }
 
 impl Block {
-    fn new(raw_path: String) -> Self {
+    fn new(raw_path: String, test_name: Option<String>) -> Self {
         Self {
             raw_path,
+            test_name,
             hits: BTreeMap::new(),
             branches: BTreeMap::new(),
             functions: BTreeMap::new(),
+            mcdc: BTreeMap::new(),
             lf: None,
             lh: None,
             fnf: None,
@@ -74,12 +79,15 @@ struct FileAcc {
     hits: BTreeMap<u32, u64>,
     branches: Vec<BranchHit>,
     functions: Vec<FunctionHit>,
+    mcdc: Vec<McdcHit>,
+    test_names: Vec<String>,
 }
 
 pub fn parse_lcov(input: &str, opts: &ParseOptions<'_>) -> Result<ParseOutcome, LcovError> {
     let mut merged: BTreeMap<String, FileAcc> = BTreeMap::new();
     let mut warnings = Vec::new();
     let mut current: Option<Block> = None;
+    let mut current_test: Option<String> = None;
     let mut last_lineno = 0;
 
     for (idx, raw) in input.lines().enumerate() {
@@ -112,7 +120,30 @@ pub fn parse_lcov(input: &str, opts: &ParseOptions<'_>) -> Result<ParseOutcome, 
                 if path.is_empty() {
                     return Err(malformed(lineno, "SF with empty path"));
                 }
-                current = Some(Block::new(path.to_string()));
+                current = Some(Block::new(path.to_string(), current_test.clone()));
+            }
+            "TN" => {
+                let name = rest.trim();
+                current_test = (!name.is_empty()).then(|| name.to_string());
+                if let Some(block) = current.as_mut() {
+                    block.test_name = current_test.clone();
+                }
+            }
+            "MCDC" => {
+                let Some(block) = current.as_mut() else {
+                    warnings.push(format!("line {lineno}: MCDC before SF skipped"));
+                    continue;
+                };
+                match parse_mcdc(rest) {
+                    Some((line_no, group, sense, index, expression, taken)) => {
+                        let slot = block
+                            .mcdc
+                            .entry((line_no, group, index, sense, expression))
+                            .or_insert(None);
+                        *slot = BranchHit::merge_taken(*slot, taken);
+                    }
+                    None => warnings.push(format!("line {lineno}: malformed MCDC skipped: {line}")),
+                }
             }
             "DA" => {
                 let block = current
@@ -239,6 +270,8 @@ pub fn parse_lcov(input: &str, opts: &ParseOptions<'_>) -> Result<ParseOutcome, 
                 acc.branches,
                 acc.functions,
             )
+            .with_mcdc(acc.mcdc)
+            .with_test_names(acc.test_names)
         })
         .collect();
 
@@ -275,6 +308,34 @@ fn parse_fnda(rest: &str) -> Option<(u64, &str)> {
     let hits: u64 = count_field.trim().parse().ok()?;
     let name = name.trim();
     (!name.is_empty()).then_some((hits, name))
+}
+
+/// Format: `MCDC:<line>,[u]<group_size>,<sense>,<taken>,<index>,<expression>` -
+/// the expression is the last field and may contain commas.
+fn parse_mcdc(rest: &str) -> Option<(u32, String, String, String, String, Option<u64>)> {
+    let mut fields = rest.splitn(6, ',');
+    let line_no: u32 = fields.next()?.trim().parse().ok()?;
+    let group = fields.next()?.trim();
+    let sense = fields.next()?.trim();
+    let taken_field = fields.next()?.trim();
+    let index = fields.next()?.trim();
+    let expression = fields.next()?.trim();
+    if line_no == 0 || group.is_empty() || sense.is_empty() || index.is_empty() {
+        return None;
+    }
+    let taken = if taken_field == "-" {
+        None
+    } else {
+        Some(taken_field.parse().ok()?)
+    };
+    Some((
+        line_no,
+        group.to_string(),
+        sense.to_string(),
+        index.to_string(),
+        expression.to_string(),
+        taken,
+    ))
 }
 
 /// Format: `BRDA:<line>,<block>,<branch>,<taken>` - taken is the last field
@@ -345,6 +406,19 @@ fn finish_block(
                     .into_iter()
                     .map(|(name, (line, hits))| FunctionHit { name, line, hits }),
             );
+            acc.mcdc.extend(block.mcdc.into_iter().map(
+                |((line, group, index, sense, expression), taken)| McdcHit {
+                    line,
+                    group,
+                    sense,
+                    index,
+                    expression,
+                    taken,
+                },
+            ));
+            if let Some(test_name) = block.test_name {
+                acc.test_names.push(test_name);
+            }
         }
         None => warnings.push(format!(
             "{}: path resolves outside repo root, dropped",
