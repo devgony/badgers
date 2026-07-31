@@ -324,6 +324,8 @@ tr:target td { outline: 2px solid #0969da; }
 .tree .row { display: grid; align-items: center;
              grid-template-columns: minmax(220px,1fr) 80px 80px 150px 110px 140px;
              border-bottom: 1px solid #eaeef2; }
+.tree.with-branches .row {
+             grid-template-columns: minmax(220px,1fr) 80px 80px 150px 110px 140px 130px; }
 .tree .cell { padding: 6px 12px; text-align: right; white-space: nowrap;
               overflow: hidden; text-overflow: ellipsis; }
 .tree .cell.name { text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -401,6 +403,8 @@ struct DirAgg {
     base_executable: u64,
     diff_covered: u32,
     diff_relevant: u32,
+    branch_covered: u64,
+    branch_total: u64,
 }
 
 impl DirAgg {
@@ -415,6 +419,10 @@ impl DirAgg {
         }
         self.diff_covered += delta.diff.covered;
         self.diff_relevant += delta.diff.relevant;
+        if let Some(c) = delta.head_branches {
+            self.branch_covered += c.covered;
+            self.branch_total += c.total;
+        }
     }
 
     fn merge(&mut self, other: DirAgg) {
@@ -424,6 +432,8 @@ impl DirAgg {
         self.base_executable += other.base_executable;
         self.diff_covered += other.diff_covered;
         self.diff_relevant += other.diff_relevant;
+        self.branch_covered += other.branch_covered;
+        self.branch_total += other.branch_total;
     }
 
     fn delta_pct(&self, base_available: bool) -> Option<f64> {
@@ -465,7 +475,13 @@ fn indent(depth: usize) -> usize {
     12 + depth * 18
 }
 
-fn render_tree(node: &DirNode, depth: usize, comparison: &ComparisonAnalysis, out: &mut String) {
+fn render_tree(
+    node: &DirNode,
+    depth: usize,
+    comparison: &ComparisonAnalysis,
+    show_branches: bool,
+    out: &mut String,
+) {
     for (name, child) in &node.dirs {
         // Compress chains of single-child directories (apps/x/src/x -> one row).
         let mut display = name.clone();
@@ -486,13 +502,26 @@ fn render_tree(node: &DirNode, depth: usize, comparison: &ComparisonAnalysis, ou
             ))
         };
         let open = if depth == 0 { " open" } else { "" };
+        let branch_cell = if show_branches {
+            let cell = if agg.branch_total == 0 {
+                "\u{2014}".to_string()
+            } else {
+                fmt_pct(badge_rs_core::coverage_pct(
+                    agg.branch_covered,
+                    agg.branch_total,
+                ))
+            };
+            format!("<span class=\"cell\">{cell}</span>")
+        } else {
+            String::new()
+        };
         let _ = writeln!(
             out,
             r#"<details class="dirnode"{open}><summary class="row dir">
 <span class="cell name" style="padding-left:{pad}px">{display}/</span>
 <span class="cell">{exec}</span><span class="cell">{cov}</span>
 <span class="cell">{coverage}</span><span class="cell">{delta}</span>
-<span class="cell">{diff}</span></summary>"#,
+<span class="cell">{diff}</span>{branch_cell}</summary>"#,
             pad = indent(depth),
             display = html_escape(&display),
             exec = agg.head_executable,
@@ -501,7 +530,7 @@ fn render_tree(node: &DirNode, depth: usize, comparison: &ComparisonAnalysis, ou
                 delta_cell(agg.delta_pct(comparison.base_available && !comparison.scope_changed())),
             diff = diff_cell(agg.diff_covered, agg.diff_relevant),
         );
-        render_tree(target, depth + 1, comparison, out);
+        render_tree(target, depth + 1, comparison, show_branches, out);
         out.push_str("</details>\n");
     }
 
@@ -531,13 +560,22 @@ fn render_tree(node: &DirNode, depth: usize, comparison: &ComparisonAnalysis, ou
             .head
             .map(|c| (c.covered, c.executable))
             .unwrap_or((0, 0));
+        let branch_cell = if show_branches {
+            let cell = delta
+                .head_branches
+                .map(|c| format!("{} ({}/{})", fmt_pct(c.pct()), c.covered, c.total))
+                .unwrap_or_else(|| "\u{2014}".to_string());
+            format!("<span class=\"cell\">{cell}</span>")
+        } else {
+            String::new()
+        };
         let _ = writeln!(
             out,
             r#"<div class="row file">
 <span class="cell name" style="padding-left:{pad}px">{name_cell}</span>
 <span class="cell">{executable}</span><span class="cell">{covered}</span>
 <span class="cell">{coverage}</span><span class="cell">{delta_html}</span>
-<span class="cell">{diff}</span></div>"#,
+<span class="cell">{diff}</span>{branch_cell}</div>"#,
             pad = indent(depth) + 18,
             delta_html = delta_cell(delta.delta_pct()),
             diff = diff_cell(delta.diff.covered, delta.diff.relevant),
@@ -555,7 +593,8 @@ fn render_index(head: &CoverageSnapshot, comparison: &ComparisonAnalysis) -> Str
         root.insert(&parts, idx);
     }
     let mut rows = String::new();
-    render_tree(&root, 0, comparison, &mut rows);
+    let show_branches = comparison.head_branch_totals().is_some();
+    render_tree(&root, 0, comparison, show_branches, &mut rows);
 
     let base_note = if comparison.scope_changed() {
         "coverage scope changed"
@@ -621,11 +660,11 @@ fn render_index(head: &CoverageSnapshot, comparison: &ComparisonAnalysis) -> Str
 <div class="sub">{diff_covered}/{diff_relevant} changed executable lines</div></div>
 {branch_card}{function_card}</div>
 {scope_notice}
-<div class="tree">
+<div class="tree{tree_class}">
 <div class="row header">
 <span class="cell name">File</span><span class="cell">Lines</span>
 <span class="cell">Covered</span><span class="cell">Coverage</span>
-<span class="cell">Δ</span><span class="cell">Diff coverage</span></div>
+<span class="cell">Δ</span><span class="cell">Diff coverage</span>{branch_header}</div>
 {rows}
 </div>
 </main></body></html>
@@ -640,6 +679,12 @@ fn render_index(head: &CoverageSnapshot, comparison: &ComparisonAnalysis) -> Str
         diff_pct = fmt_pct(diff_totals.pct()),
         diff_covered = diff_totals.covered,
         diff_relevant = diff_totals.relevant,
+        tree_class = if show_branches { " with-branches" } else { "" },
+        branch_header = if show_branches {
+            "<span class=\"cell\">Branches</span>"
+        } else {
+            ""
+        },
     )
 }
 
@@ -904,11 +949,17 @@ mod tests {
         let html = render_index(&snapshot, &analysis);
         assert!(html.contains("Branch coverage"));
         assert!(html.contains("3/4 branches · 1 of 2 changed branches taken"));
+        assert!(html.contains("class=\"tree with-branches\""));
+        assert!(html.contains("<span class=\"cell\">Branches</span>"));
+        assert!(html.contains("75.00% (3/4)"));
 
         analysis.comparison.files[0].head_branches = None;
         analysis.comparison.files[0].branch_diff = BranchDiffCoverage::default();
         let line_only = render_index(&snapshot, &analysis);
         assert!(!line_only.contains("Branch coverage"));
+        assert!(line_only.contains("<div class=\"tree\">"));
+        assert!(!line_only.contains("class=\"tree with-branches\""));
+        assert!(!line_only.contains("<span class=\"cell\">Branches</span>"));
     }
 
     #[test]

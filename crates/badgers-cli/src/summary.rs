@@ -52,6 +52,15 @@ pub fn render(snapshot: &CoverageSnapshot) -> String {
             snapshot.total_functions()
         );
     }
+    if snapshot.total_mcdc() > 0 {
+        let _ = writeln!(
+            out,
+            "MC/DC coverage:    {} ({}/{})",
+            fmt_pct(snapshot.mcdc_pct()),
+            snapshot.covered_mcdc(),
+            snapshot.total_mcdc()
+        );
+    }
     out
 }
 
