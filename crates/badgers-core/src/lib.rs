@@ -91,6 +91,27 @@ pub struct FunctionHit {
     pub hits: u64,
 }
 
+/// Outcome count for one MC/DC condition sense (LCOV `MCDC`).
+///
+/// `group`, `index`, and `expression` are kept verbatim; together with
+/// `line` and `sense` (`t`/`f`) they identify one condition outcome.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McdcHit {
+    pub line: u32,
+    pub group: String,
+    pub sense: String,
+    pub index: String,
+    pub expression: String,
+    /// `None` when the condition was never evaluated (LCOV `-`).
+    pub taken: Option<u64>,
+}
+
+impl McdcHit {
+    pub fn is_covered(&self) -> bool {
+        self.taken.is_some_and(|taken| taken > 0)
+    }
+}
+
 /// Line coverage for one file.
 ///
 /// `line_hits` is the canonical source of truth; executable/covered counts
@@ -110,6 +131,14 @@ pub struct FileCoverage {
     /// [`FileCoverage::detailed`]). Additive field; absent in older snapshots.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub functions: Vec<FunctionHit>,
+    /// Sorted by (line, group, index, sense, expression), no duplicates.
+    /// Additive field; absent in older snapshots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcdc: Vec<McdcHit>,
+    /// Distinct LCOV `TN` test names whose records covered this file, sorted.
+    /// Additive field; absent in older snapshots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub test_names: Vec<String>,
 }
 
 impl FileCoverage {
@@ -130,14 +159,39 @@ impl FileCoverage {
         branches: Vec<BranchHit>,
         functions: Vec<FunctionHit>,
     ) -> Self {
+        Self {
+            path,
+            language,
+            line_hits,
+            branches,
+            functions,
+            mcdc: Vec::new(),
+            test_names: Vec::new(),
+        }
+        .normalized()
+    }
+
+    /// Replaces MC/DC data and re-normalizes; see [`FileCoverage::detailed`].
+    pub fn with_mcdc(mut self, mcdc: Vec<McdcHit>) -> Self {
+        self.mcdc = mcdc;
+        self.normalized()
+    }
+
+    /// Replaces test-name attribution and re-normalizes.
+    pub fn with_test_names(mut self, test_names: Vec<String>) -> Self {
+        self.test_names = test_names;
+        self.normalized()
+    }
+
+    fn normalized(self) -> Self {
         let mut merged: BTreeMap<u32, u64> = BTreeMap::new();
-        for lh in line_hits {
+        for lh in self.line_hits {
             let slot = merged.entry(lh.line).or_insert(0);
             *slot = slot.saturating_add(lh.hits);
         }
 
         let mut merged_branches: BTreeMap<(u32, String, String), Option<u64>> = BTreeMap::new();
-        for branch in branches {
+        for branch in self.branches {
             let slot = merged_branches
                 .entry((branch.line, branch.block, branch.branch))
                 .or_insert(None);
@@ -145,7 +199,7 @@ impl FileCoverage {
         }
 
         let mut merged_functions: BTreeMap<String, (u32, u64)> = BTreeMap::new();
-        for function in functions {
+        for function in self.functions {
             let slot = merged_functions
                 .entry(function.name)
                 .or_insert((function.line, 0));
@@ -155,9 +209,22 @@ impl FileCoverage {
             slot.1 = slot.1.saturating_add(function.hits);
         }
 
+        let mut merged_mcdc: BTreeMap<(u32, String, String, String, String), Option<u64>> =
+            BTreeMap::new();
+        for hit in self.mcdc {
+            let slot = merged_mcdc
+                .entry((hit.line, hit.group, hit.index, hit.sense, hit.expression))
+                .or_insert(None);
+            *slot = BranchHit::merge_taken(*slot, hit.taken);
+        }
+
+        let mut test_names = self.test_names;
+        test_names.sort_unstable();
+        test_names.dedup();
+
         Self {
-            path,
-            language,
+            path: self.path,
+            language: self.language,
             line_hits: merged
                 .into_iter()
                 .map(|(line, hits)| LineHit { line, hits })
@@ -175,6 +242,18 @@ impl FileCoverage {
                 .into_iter()
                 .map(|(name, (line, hits))| FunctionHit { name, line, hits })
                 .collect(),
+            mcdc: merged_mcdc
+                .into_iter()
+                .map(|((line, group, index, sense, expression), taken)| McdcHit {
+                    line,
+                    group,
+                    sense,
+                    index,
+                    expression,
+                    taken,
+                })
+                .collect(),
+            test_names,
         }
     }
 
@@ -231,6 +310,21 @@ impl FileCoverage {
             u64::from(self.total_functions()),
         )
     }
+
+    /// Number of MC/DC condition outcomes.
+    pub fn total_mcdc(&self) -> u32 {
+        self.mcdc.len() as u32
+    }
+
+    /// Number of MC/DC condition outcomes taken at least once.
+    pub fn covered_mcdc(&self) -> u32 {
+        self.mcdc.iter().filter(|m| m.is_covered()).count() as u32
+    }
+
+    /// MC/DC coverage percentage, `None` without MC/DC data.
+    pub fn mcdc_pct(&self) -> Option<f64> {
+        coverage_pct(u64::from(self.covered_mcdc()), u64::from(self.total_mcdc()))
+    }
 }
 
 /// `covered / executable * 100`, or `None` when `executable == 0`.
@@ -282,32 +376,23 @@ impl CoverageSnapshot {
     ) -> Self {
         let mut by_path: BTreeMap<String, FileCoverage> = BTreeMap::new();
         for fc in files {
-            let fc = FileCoverage::detailed(
-                fc.path,
-                fc.language,
-                fc.line_hits,
-                fc.branches,
-                fc.functions,
-            );
+            let fc = fc.normalized();
             match by_path.entry(fc.path.clone()) {
                 Entry::Vacant(v) => {
                     v.insert(fc);
                 }
                 Entry::Occupied(mut o) => {
                     let existing = o.get_mut();
-                    let mut combined = std::mem::take(&mut existing.line_hits);
-                    combined.extend(fc.line_hits);
-                    let mut combined_branches = std::mem::take(&mut existing.branches);
-                    combined_branches.extend(fc.branches);
-                    let mut combined_functions = std::mem::take(&mut existing.functions);
-                    combined_functions.extend(fc.functions);
-                    *existing = FileCoverage::detailed(
-                        existing.path.clone(),
-                        existing.language,
-                        combined,
-                        combined_branches,
-                        combined_functions,
+                    existing.line_hits.extend(fc.line_hits);
+                    existing.branches.extend(fc.branches);
+                    existing.functions.extend(fc.functions);
+                    existing.mcdc.extend(fc.mcdc);
+                    existing.test_names.extend(fc.test_names);
+                    let combined = std::mem::replace(
+                        existing,
+                        FileCoverage::new(String::new(), Language::Unknown, Vec::new()),
                     );
+                    *existing = combined.normalized();
                 }
             }
         }
@@ -384,6 +469,21 @@ impl CoverageSnapshot {
     /// Total function coverage percentage, `None` when there are no functions.
     pub fn function_pct(&self) -> Option<f64> {
         coverage_pct(self.covered_functions(), self.total_functions())
+    }
+
+    /// Total MC/DC condition outcomes across all files.
+    pub fn total_mcdc(&self) -> u64 {
+        self.files.iter().map(|f| u64::from(f.total_mcdc())).sum()
+    }
+
+    /// Total covered MC/DC condition outcomes across all files.
+    pub fn covered_mcdc(&self) -> u64 {
+        self.files.iter().map(|f| u64::from(f.covered_mcdc())).sum()
+    }
+
+    /// Total MC/DC coverage percentage, `None` without MC/DC data.
+    pub fn mcdc_pct(&self) -> Option<f64> {
+        coverage_pct(self.covered_mcdc(), self.total_mcdc())
     }
 }
 
@@ -617,6 +717,8 @@ mod tests {
         let json = serde_json::to_string_pretty(&line_only).unwrap();
         assert!(!json.contains("\"branches\""));
         assert!(!json.contains("\"functions\""));
+        assert!(!json.contains("\"mcdc\""));
+        assert!(!json.contains("\"test_names\""));
         assert_eq!(line_only.schema_version, SCHEMA_VERSION);
 
         let back: CoverageSnapshot = serde_json::from_str(&json).unwrap();
