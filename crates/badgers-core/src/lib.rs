@@ -110,6 +110,19 @@ impl McdcHit {
     pub fn is_covered(&self) -> bool {
         self.taken.is_some_and(|taken| taken > 0)
     }
+
+    /// Whether LCOV marked this condition outcome unreachable (`U<group_size>`).
+    pub fn is_unreachable(&self) -> bool {
+        Self::group_is_unreachable(&self.group)
+    }
+
+    /// Recognizes the official uppercase `U` prefix without interpreting other
+    /// producer-specific group identifiers.
+    pub fn group_is_unreachable(group: &str) -> bool {
+        group
+            .strip_prefix('U')
+            .is_some_and(|size| !size.is_empty() && size.bytes().all(|b| b.is_ascii_digit()))
+    }
 }
 
 /// Line coverage for one file.
@@ -311,14 +324,17 @@ impl FileCoverage {
         )
     }
 
-    /// Number of MC/DC condition outcomes.
+    /// Number of reachable MC/DC condition outcomes.
     pub fn total_mcdc(&self) -> u32 {
-        self.mcdc.len() as u32
+        self.mcdc.iter().filter(|m| !m.is_unreachable()).count() as u32
     }
 
-    /// Number of MC/DC condition outcomes taken at least once.
+    /// Number of reachable MC/DC condition outcomes taken at least once.
     pub fn covered_mcdc(&self) -> u32 {
-        self.mcdc.iter().filter(|m| m.is_covered()).count() as u32
+        self.mcdc
+            .iter()
+            .filter(|m| !m.is_unreachable() && m.is_covered())
+            .count() as u32
     }
 
     /// MC/DC coverage percentage, `None` without MC/DC data.
@@ -705,6 +721,52 @@ mod tests {
         assert_eq!(snap.files[0].functions[0].hits, 3);
         assert_eq!(snap.total_functions(), 1);
         assert_eq!(snap.covered_functions(), 1);
+    }
+
+    #[test]
+    fn mcdc_totals_exclude_only_official_unreachable_groups() {
+        let file =
+            FileCoverage::new("a.c".to_string(), Language::Unknown, Vec::new()).with_mcdc(vec![
+                McdcHit {
+                    line: 1,
+                    group: "2".to_string(),
+                    sense: "t".to_string(),
+                    index: "0".to_string(),
+                    expression: "0".to_string(),
+                    taken: Some(1),
+                },
+                McdcHit {
+                    line: 1,
+                    group: "U2".to_string(),
+                    sense: "f".to_string(),
+                    index: "0".to_string(),
+                    expression: "0".to_string(),
+                    taken: Some(4),
+                },
+                McdcHit {
+                    line: 2,
+                    group: "u2".to_string(),
+                    sense: "t".to_string(),
+                    index: "0".to_string(),
+                    expression: "0".to_string(),
+                    taken: Some(0),
+                },
+                McdcHit {
+                    line: 3,
+                    group: "UserGroup".to_string(),
+                    sense: "t".to_string(),
+                    index: "0".to_string(),
+                    expression: "0".to_string(),
+                    taken: Some(1),
+                },
+            ]);
+
+        assert_eq!(file.mcdc.len(), 4);
+        assert_eq!(file.total_mcdc(), 3);
+        assert_eq!(file.covered_mcdc(), 2);
+        let snapshot = snapshot_with(vec![file]);
+        assert_eq!(snapshot.total_mcdc(), 3);
+        assert_eq!(snapshot.covered_mcdc(), 2);
     }
 
     #[test]

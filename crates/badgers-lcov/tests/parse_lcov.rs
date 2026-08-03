@@ -124,6 +124,8 @@ DA:10,1
 MCDC:10,2,f,0,0,enable
 MCDC:10,2,t,1,0,enable
 MCDC:0,2,t,1,0,bad
+MCF:2
+MCH:1
 end_of_record
 TN:integration_suite
 SF:a.c
@@ -141,6 +143,91 @@ end_of_record
         file.test_names,
         vec!["integration_suite".to_string(), "unit_suite".to_string()]
     );
+}
+
+#[test]
+fn validates_gcc14_mcdc_outcome_summaries() {
+    let input = include_str!("fixtures/gcc14_mcdc.lcov");
+    let outcome = parse_lcov(input, &opts(Path::new("/repo"))).unwrap();
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    assert_eq!(outcome.files.len(), 1);
+    assert_eq!(outcome.files[0].total_mcdc(), 12);
+    assert_eq!(outcome.files[0].covered_mcdc(), 10);
+}
+
+#[test]
+fn accepts_reachable_only_and_ignore_unreachable_mcdc_summaries() {
+    let records = |mcf: Option<u64>, mch: Option<u64>| {
+        let summaries = [
+            mcf.map(|count| format!("MCF:{count}\n")),
+            mch.map(|count| format!("MCH:{count}\n")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<String>();
+        format!(
+            "SF:a.c\n\
+             MCDC:1,2,t,1,0,0\n\
+             MCDC:1,2,f,0,0,0\n\
+             MCDC:1,U2,t,4,1,1\n\
+             MCDC:1,U2,f,0,1,1\n\
+             {summaries}\
+             end_of_record\n"
+        )
+    };
+
+    let reachable = parse_lcov(&records(Some(2), Some(1)), &opts(Path::new("/repo"))).unwrap();
+    assert!(reachable.warnings.is_empty(), "{:?}", reachable.warnings);
+    assert_eq!(reachable.files[0].mcdc.len(), 4);
+    assert_eq!(reachable.files[0].total_mcdc(), 2);
+    assert_eq!(reachable.files[0].covered_mcdc(), 1);
+
+    let including_unreachable =
+        parse_lcov(&records(Some(4), Some(2)), &opts(Path::new("/repo"))).unwrap();
+    assert!(
+        including_unreachable.warnings.is_empty(),
+        "{:?}",
+        including_unreachable.warnings
+    );
+
+    for input in [
+        records(Some(2), None),
+        records(Some(4), None),
+        records(None, Some(1)),
+        records(None, Some(2)),
+    ] {
+        let outcome = parse_lcov(&input, &opts(Path::new("/repo"))).unwrap();
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    }
+}
+
+#[test]
+fn treats_lowercase_u_group_as_reachable_and_rejects_mixed_summary_modes() {
+    let lowercase = "\
+SF:a.c
+MCDC:1,u1,t,1,0,0
+MCDC:1,u1,f,0,0,0
+MCF:2
+MCH:1
+end_of_record
+";
+    let outcome = parse_lcov(lowercase, &opts(Path::new("/repo"))).unwrap();
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    assert_eq!(outcome.files[0].total_mcdc(), 2);
+
+    let mixed = "\
+SF:a.c
+MCDC:1,2,t,1,0,0
+MCDC:1,2,f,0,0,0
+MCDC:1,U2,t,1,1,1
+MCDC:1,U2,f,1,1,1
+MCF:2
+MCH:3
+end_of_record
+";
+    let outcome = parse_lcov(mixed, &opts(Path::new("/repo"))).unwrap();
+    assert_eq!(outcome.warnings.len(), 1);
+    assert!(outcome.warnings[0].contains("MCF/MCH disagree"));
 }
 
 #[test]
@@ -164,7 +251,7 @@ end_of_record
 }
 
 #[test]
-fn warns_on_function_and_branch_summary_mismatches() {
+fn warns_on_function_branch_and_mcdc_summary_mismatches() {
     let input = "\
 SF:a.py
 DA:1,1
@@ -175,14 +262,22 @@ FNH:1
 BRDA:1,0,0,1
 BRF:2
 BRH:0
+MCDC:1,1,t,1,0,enabled
+MCDC:1,1,f,0,0,enabled
+MCF:3
+MCH:0
 end_of_record
 ";
     let outcome = parse_lcov(input, &opts(Path::new("/repo"))).unwrap();
-    assert_eq!(outcome.warnings.len(), 4);
+    assert_eq!(outcome.warnings.len(), 6);
     assert!(outcome.warnings[0].contains("FNF=2"));
     assert!(outcome.warnings[1].contains("FNH=1"));
     assert!(outcome.warnings[2].contains("BRF=2"));
     assert!(outcome.warnings[3].contains("BRH=0"));
+    assert!(outcome.warnings[4].contains("MCF=3"));
+    assert!(outcome.warnings[4].contains("2 MC/DC condition outcomes"));
+    assert!(outcome.warnings[5].contains("MCH=0"));
+    assert!(outcome.warnings[5].contains("1 covered MC/DC condition outcomes"));
 }
 
 #[test]

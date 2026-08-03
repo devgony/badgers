@@ -2,10 +2,10 @@
 //!
 //! Line records (`SF`, `DA`, `LF`, `LH`, `end_of_record`) are strict: malformed
 //! input fails the parse. Function (`FN`, `FNDA`, `FNF`, `FNH`), branch
-//! (`BRDA`, `BRF`, `BRH`), and MC/DC (`MCDC`) records are best-effort:
+//! (`BRDA`, `BRF`, `BRH`), and MC/DC (`MCDC`, `MCF`, `MCH`) records are best-effort:
 //! malformed entries are skipped with a warning so reports from older tools
 //! keep parsing. `TN` names are attributed to the files they cover. `VER`,
-//! `MCF`/`MCH` summaries, and `DA` checksums are ignored.
+//! and `DA` checksums are ignored.
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
@@ -53,6 +53,8 @@ struct Block {
     fnh: Option<u64>,
     brf: Option<u64>,
     brh: Option<u64>,
+    mcf: Option<u64>,
+    mch: Option<u64>,
 }
 
 impl Block {
@@ -70,6 +72,8 @@ impl Block {
             fnh: None,
             brf: None,
             brh: None,
+            mcf: None,
+            mch: None,
         }
     }
 }
@@ -222,7 +226,7 @@ pub fn parse_lcov(input: &str, opts: &ParseOptions<'_>) -> Result<ParseOutcome, 
                     None => warnings.push(format!("line {lineno}: malformed BRDA skipped: {line}")),
                 }
             }
-            "FNF" | "FNH" | "BRF" | "BRH" => {
+            "FNF" | "FNH" | "BRF" | "BRH" | "MCF" | "MCH" => {
                 let Some(block) = current.as_mut() else {
                     warnings.push(format!("line {lineno}: {tag} before SF skipped"));
                     continue;
@@ -233,7 +237,9 @@ pub fn parse_lcov(input: &str, opts: &ParseOptions<'_>) -> Result<ParseOutcome, 
                             "FNF" => &mut block.fnf,
                             "FNH" => &mut block.fnh,
                             "BRF" => &mut block.brf,
-                            _ => &mut block.brh,
+                            "BRH" => &mut block.brh,
+                            "MCF" => &mut block.mcf,
+                            _ => &mut block.mch,
                         };
                         *slot = Some(count);
                     }
@@ -310,7 +316,7 @@ fn parse_fnda(rest: &str) -> Option<(u64, &str)> {
     (!name.is_empty()).then_some((hits, name))
 }
 
-/// Format: `MCDC:<line>,[u]<group_size>,<sense>,<taken>,<index>,<expression>` -
+/// Format: `MCDC:<line>,[U]<group_size>,<sense>,<taken>,<index>,<expression>` -
 /// the expression is the last field and may contain commas.
 fn parse_mcdc(rest: &str) -> Option<(u32, String, String, String, String, Option<u64>)> {
     let mut fields = rest.splitn(6, ',');
@@ -385,6 +391,33 @@ fn finish_block(
     validate_count(warnings, &block.raw_path, "BRF", block.brf, branches_found);
     validate_count(warnings, &block.raw_path, "BRH", block.brh, branches_hit);
 
+    let all_mcdc_found = block.mcdc.len() as u64;
+    let all_mcdc_hit = block
+        .mcdc
+        .values()
+        .filter(|taken| taken.is_some_and(|t| t > 0))
+        .count() as u64;
+    let reachable_mcdc_found = block
+        .mcdc
+        .keys()
+        .filter(|(_, group, _, _, _)| !McdcHit::group_is_unreachable(group))
+        .count() as u64;
+    let reachable_mcdc_hit = block
+        .mcdc
+        .iter()
+        .filter(|((_, group, _, _, _), taken)| {
+            !McdcHit::group_is_unreachable(group) && taken.is_some_and(|t| t > 0)
+        })
+        .count() as u64;
+    validate_mcdc_counts(
+        warnings,
+        &block.raw_path,
+        block.mcf,
+        block.mch,
+        (reachable_mcdc_found, reachable_mcdc_hit),
+        (all_mcdc_found, all_mcdc_hit),
+    );
+
     match normalize_sf_path(&block.raw_path, opts.repo_root) {
         Some(path) => {
             let acc = merged.entry(path).or_default();
@@ -443,10 +476,59 @@ fn validate_count(
             "FNF" => "functions",
             "FNH" => "covered functions",
             "BRF" => "branches",
-            _ => "covered branches",
+            "BRH" => "covered branches",
+            "MCF" => "MC/DC condition outcomes",
+            _ => "covered MC/DC condition outcomes",
         };
         warnings.push(format!(
             "{path}: {tag}={declared} disagrees with {actual} {records}"
+        ));
+    }
+}
+
+fn validate_mcdc_counts(
+    warnings: &mut Vec<String>,
+    path: &str,
+    mcf: Option<u64>,
+    mch: Option<u64>,
+    reachable: (u64, u64),
+    all: (u64, u64),
+) {
+    if reachable == all {
+        validate_count(warnings, path, "MCF", mcf, reachable.0);
+        validate_count(warnings, path, "MCH", mch, reachable.1);
+        return;
+    }
+
+    let matches_mode = |counts: (u64, u64)| {
+        mcf.is_none_or(|declared| declared == counts.0)
+            && mch.is_none_or(|declared| declared == counts.1)
+    };
+    if matches_mode(reachable) || matches_mode(all) {
+        return;
+    }
+
+    let mcf_valid = mcf.is_none_or(|declared| declared == reachable.0 || declared == all.0);
+    let mch_valid = mch.is_none_or(|declared| declared == reachable.1 || declared == all.1);
+    if let Some(declared) = mcf
+        && !mcf_valid
+    {
+        warnings.push(format!(
+            "{path}: MCF={declared} disagrees with {} reachable or {} total MC/DC condition outcomes",
+            reachable.0, all.0
+        ));
+    }
+    if let Some(declared) = mch
+        && !mch_valid
+    {
+        warnings.push(format!(
+            "{path}: MCH={declared} disagrees with {} reachable or {} total covered MC/DC condition outcomes",
+            reachable.1, all.1
+        ));
+    }
+    if mcf.is_some() && mch.is_some() && mcf_valid && mch_valid {
+        warnings.push(format!(
+            "{path}: MCF/MCH disagree on whether unreachable MC/DC condition outcomes are included"
         ));
     }
 }

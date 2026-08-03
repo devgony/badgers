@@ -1,0 +1,17 @@
+TN:
+SF:sample.c
+MCDC:1,3,t,1,0,0
+MCDC:1,3,f,1,0,0
+MCDC:1,3,t,1,1,1
+MCDC:1,3,f,1,1,1
+MCDC:1,3,t,1,2,2
+MCDC:1,3,f,1,2,2
+MCDC:2,3,t,1,0,0
+MCDC:2,3,f,0,0,0
+MCDC:2,3,t,1,1,1
+MCDC:2,3,f,1,1,1
+MCDC:2,3,t,0,2,2
+MCDC:2,3,f,1,2,2
+MCF:12
+MCH:10
+end_of_record
