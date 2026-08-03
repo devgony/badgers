@@ -7,10 +7,13 @@
 //! keep parsing. `TN` names are attributed to the files they cover. `VER`,
 //! and `DA` checksums are ignored.
 
+mod llvm_json;
+
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
 
 use badge_rs_core::{BranchHit, FileCoverage, FunctionHit, Language, LineHit, McdcHit};
+pub use llvm_json::{LlvmJsonError, enrich_mcdc_from_llvm_json};
 
 #[derive(Debug)]
 pub struct ParseOptions<'a> {
@@ -537,7 +540,7 @@ fn validate_mcdc_counts(
 ///
 /// Returns `None` when the path resolves outside the repo root (third-party
 /// code such as stdlib or vendored dependencies).
-fn normalize_sf_path(raw: &str, repo_root: &Path) -> Option<String> {
+pub(crate) fn normalize_sf_path(raw: &str, repo_root: &Path) -> Option<String> {
     let unified = raw.replace('\\', "/");
     let path = Path::new(&unified);
     let relative = if path.is_absolute() {

@@ -337,6 +337,7 @@ name = "badge-rs-lcov"
 version = "2.2.0"
 dependencies = [
  "badge-rs-core",
+ "serde_json",
  "thiserror 2.0.19",
 ]
 
