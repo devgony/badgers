@@ -123,6 +123,51 @@ fn collect_lcov_captures_branch_and_function_coverage() {
 }
 
 #[test]
+fn collect_lcov_enriches_mcdc_from_llvm_cov_json() {
+    let lcov = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/llvm_mcdc.lcov");
+    let json = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/llvm_mcdc.json");
+    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("llvm-mcdc-snapshot.json");
+
+    Command::cargo_bin("badgers")
+        .unwrap()
+        .args(["collect", "lcov", "--lcov-file", lcov])
+        .args(["--llvm-cov-json", json])
+        .args(["--repo-root", "."])
+        .arg("-o")
+        .arg(&out)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("MC/DC coverage:    60.00% (3/5)"));
+
+    let snapshot: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let mcdc = snapshot["files"][0]["mcdc"].as_array().unwrap();
+    assert_eq!(mcdc.len(), 5);
+    assert_eq!(mcdc[0]["sense"], "c");
+    assert!(
+        mcdc[0]["group"]
+            .as_str()
+            .unwrap()
+            .starts_with("llvm:1:44-1:57")
+    );
+}
+
+#[test]
+fn collect_lcov_missing_llvm_cov_json_fails_with_code_1() {
+    let lcov = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/llvm_mcdc.lcov");
+
+    Command::cargo_bin("badgers")
+        .unwrap()
+        .args(["collect", "lcov", "--lcov-file", lcov])
+        .args(["--llvm-cov-json", "does-not-exist.json"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "failed to read llvm-cov JSON file",
+        ));
+}
+
+#[test]
 fn collect_lcov_missing_file_fails_with_code_1() {
     Command::cargo_bin("badgers")
         .unwrap()

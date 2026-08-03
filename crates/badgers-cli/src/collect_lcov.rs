@@ -4,7 +4,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use badge_rs_core::{CoverageSnapshot, ToolVersions};
-use badge_rs_lcov::{ParseOptions, parse_lcov};
+use badge_rs_lcov::{ParseOptions, enrich_mcdc_from_llvm_json, parse_lcov};
 use clap::Args;
 
 #[derive(Args, Debug)]
@@ -12,6 +12,11 @@ pub struct CollectLcovArgs {
     /// LCOV file produced by your coverage tool
     #[arg(long, value_name = "PATH", default_value = "coverage/lcov.info")]
     pub lcov_file: PathBuf,
+
+    /// Optional llvm-cov JSON export (-format=text) used to add MC/DC data,
+    /// which llvm-cov omits from its LCOV output
+    #[arg(long, value_name = "PATH")]
+    pub llvm_cov_json: Option<PathBuf>,
 
     /// Repository root used to normalize file paths
     #[arg(long, value_name = "PATH", default_value = ".")]
@@ -38,7 +43,7 @@ pub fn run(args: &CollectLcovArgs) -> Result<()> {
         )
     })?;
 
-    let outcome = parse_lcov(
+    let mut outcome = parse_lcov(
         &lcov_text,
         &ParseOptions {
             repo_root: &repo_root,
@@ -46,6 +51,25 @@ pub fn run(args: &CollectLcovArgs) -> Result<()> {
     )?;
     for warning in &outcome.warnings {
         eprintln!("warning: {warning}");
+    }
+
+    if let Some(llvm_cov_json) = &args.llvm_cov_json {
+        let json_text = fs::read_to_string(llvm_cov_json).with_context(|| {
+            format!(
+                "failed to read llvm-cov JSON file '{}' (did your coverage command write it?)",
+                llvm_cov_json.display()
+            )
+        })?;
+        let warnings = enrich_mcdc_from_llvm_json(
+            &json_text,
+            &ParseOptions {
+                repo_root: &repo_root,
+            },
+            &mut outcome.files,
+        )?;
+        for warning in &warnings {
+            eprintln!("warning: {warning}");
+        }
     }
 
     let snapshot = CoverageSnapshot::new(
