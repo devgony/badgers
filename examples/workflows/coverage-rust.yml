@@ -34,6 +34,10 @@ jobs:
 
       # Branch coverage for Rust requires nightly: install a nightly
       # toolchain and use "cargo +nightly llvm-cov --branch ..." instead.
+      #
+      # MC/DC is currently unavailable for Rust (removed from nightly in
+      # rust-lang/rust#144999). Clang C/C++ projects using llvm-cov can add
+      # the llvm-cov-json input to include MC/DC; see the README.
       - uses: devgony/badgers@v2
         with:
           coverage-command: >-

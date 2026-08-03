@@ -27,6 +27,13 @@ inputs:
     description: >
       LCOV file written by coverage-command, relative to working-directory.
     default: "coverage/lcov.info"
+  llvm-cov-json:
+    description: >
+      Optional llvm-cov JSON export (llvm-cov export -format=text) written by
+      coverage-command, relative to working-directory. llvm-cov omits MC/DC
+      from its LCOV output, so this sidecar is the only way to include MC/DC
+      data for LLVM-based toolchains. Empty disables MC/DC enrichment.
+    default: ""
   pages:
     description: Deploy the HTML report to GitHub Pages (gh-pages branch)
     default: "false"
@@ -185,13 +192,21 @@ runs:
       env:
         MARKDOWN_SUMMARY: ${{ inputs.markdown-summary }}
         BADGERS_LCOV_FILE: ${{ inputs.lcov-file }}
+        BADGERS_LLVM_COV_JSON: ${{ inputs.llvm-cov-json }}
       run: |
         set -euo pipefail
         if [ -z "$BADGERS_LCOV_FILE" ]; then
           echo "::error::lcov-file must not be empty"
           exit 1
         fi
+        MCDC_ARGS=()
+        if [ -n "$BADGERS_LLVM_COV_JSON" ]; then
+          MCDC_ARGS=(--llvm-cov-json "$BADGERS_LLVM_COV_JSON")
+        fi
+        # ${arr[@]+...} keeps `set -u` happy on the macOS runners' bash 3.2,
+        # where expanding an empty array is an unbound-variable error.
         badgers collect lcov --lcov-file "$BADGERS_LCOV_FILE" \
+          ${MCDC_ARGS[@]+"${MCDC_ARGS[@]}"} \
           --repo-root . -o coverage-snapshot.json \
           | tee badgers-summary.txt
         if [ "$MARKDOWN_SUMMARY" != "true" ]; then
@@ -314,6 +329,7 @@ runs:
         BADGERS_COVERAGE_COMMAND: ${{ inputs.coverage-command }}
         BADGERS_WORKING_DIRECTORY: ${{ inputs.working-directory }}
         BADGERS_LCOV_FILE: ${{ inputs.lcov-file }}
+        BADGERS_LLVM_COV_JSON: ${{ inputs.llvm-cov-json }}
       run: |
         set -euo pipefail
         if [ -z "$BADGERS_LCOV_FILE" ]; then
@@ -328,7 +344,12 @@ runs:
         if [ -d "$BASE_DIR" ]; then
           cd "$BASE_DIR"
           bash -c "$BADGERS_COVERAGE_COMMAND"
+          MCDC_ARGS=()
+          if [ -n "$BADGERS_LLVM_COV_JSON" ]; then
+            MCDC_ARGS=(--llvm-cov-json "$BADGERS_LLVM_COV_JSON")
+          fi
           badgers collect lcov --lcov-file "$BADGERS_LCOV_FILE" \
+            ${MCDC_ARGS[@]+"${MCDC_ARGS[@]}"} \
             --repo-root . -o /tmp/badgers-base-snapshot.json
         else
           echo "::notice::working directory missing at merge-base; skipping baseline"

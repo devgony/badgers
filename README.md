@@ -140,6 +140,25 @@ branches are only partially taken. Python needs `coverage run --branch`,
 Flutter needs `flutter test --branch-coverage`, and Rust currently needs a
 nightly toolchain (`cargo +nightly llvm-cov --branch`).
 
+MC/DC data is read from `MCDC` records when the LCOV producer emits them
+(GCC 14+ with `gcov --conditions` through `geninfo --mcdc`). LLVM-based
+toolchains never emit MC/DC in their LCOV output, so Badgers also accepts the
+llvm-cov JSON export as an optional sidecar via the `llvm-cov-json` input
+(CLI: `badgers collect lcov --llvm-cov-json <PATH>`). Have your coverage
+command write both files:
+
+```bash
+llvm-cov export ./target -instr-profile=cov.profdata -format=lcov > coverage/lcov.info
+llvm-cov export ./target -instr-profile=cov.profdata -format=text > coverage/llvm-cov.json
+```
+
+The sidecar is validated against its own summaries and the LCOV line totals;
+files whose MC/DC records cannot be reconciled (for example folded constant
+conditions, which llvm-cov excludes from its summary but does not identify in
+the JSON) are skipped with a warning instead of publishing wrong totals. GCC
+sense-based MC/DC and LLVM condition-based MC/DC are never mixed in one
+snapshot.
+
 Ready-to-copy workflow files for Rust, Python, and Flutter live in
 [`examples/workflows/`](./examples/workflows).
 
