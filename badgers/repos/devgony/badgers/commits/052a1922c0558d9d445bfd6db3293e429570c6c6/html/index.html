@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Badgers Coverage Report</title><style>
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+       margin: 0; background: #f6f8fa; color: #1f2328; }
+header { background: #24292f; color: #fff; padding: 16px 24px; }
+header h1 { margin: 0 0 4px; font-size: 18px; }
+header .meta { font-size: 12px; color: #d0d7de; }
+main { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+.cards { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+.card { background: #fff; border: 1px solid #d0d7de; border-radius: 8px;
+        padding: 12px 20px; min-width: 160px; }
+.card .label { font-size: 12px; color: #57606a; }
+.card .value { font-size: 22px; font-weight: 600; }
+.card .sub { font-size: 12px; color: #57606a; }
+.up { color: #1a7f37; } .down { color: #cf222e; } .flat { color: #57606a; }
+table { border-collapse: collapse; width: 100%; background: #fff;
+        border: 1px solid #d0d7de; border-radius: 8px; overflow: hidden; }
+th, td { padding: 8px 12px; text-align: right; font-size: 13px;
+         border-bottom: 1px solid #eaeef2; }
+th { background: #f6f8fa; color: #57606a; font-weight: 600; }
+td.path, th.path { text-align: left; font-family: ui-monospace, monospace; }
+tr:hover td { background: #f6f8fa; }
+a { color: #0969da; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.removed { color: #8c959f; }
+.legend { font-size: 12px; color: #57606a; margin: 12px 0; }
+.legend span { padding: 2px 8px; border-radius: 4px; margin-right: 8px; }
+table.code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+table.code td { padding: 0 8px; font-size: 12.5px; line-height: 1.7;
+                border-bottom: none; white-space: pre; text-align: left; }
+td.ln { text-align: right !important; color: #8c959f; width: 1%;
+        user-select: none; border-right: 1px solid #eaeef2; }
+td.ln a { color: inherit; }
+td.hits { text-align: right !important; color: #57606a; width: 1%;
+          border-right: 1px solid #eaeef2; }
+td.chg { width: 1%; color: #0969da; font-weight: 700; user-select: none; }
+tr.cov { background: #e6ffec; }
+tr.miss { background: #ffebe9; }
+tr.cov.changed { background: #abf2bc; }
+tr.miss.changed { background: #ffb3ad; }
+tr.changed td.chg::before { content: "±"; }
+tr:target td { outline: 2px solid #0969da; }
+.uncovered-links { margin: 8px 0 16px; font-size: 13px; }
+.uncovered-links a { margin-right: 6px; }
+.notice { background: #fff8c5; border: 1px solid rgba(212,167,44,.4); border-radius: 8px;
+          padding: 10px 14px; font-size: 13px; color: #4d2d00; margin-bottom: 12px; }
+.tree { background: #fff; border: 1px solid #d0d7de; border-radius: 8px;
+        overflow: hidden; font-size: 13px; }
+.tree .row { display: grid; align-items: center;
+             grid-template-columns: minmax(220px,1fr) 80px 80px 150px 110px 140px;
+             border-bottom: 1px solid #eaeef2; }
+.tree .cell { padding: 6px 12px; text-align: right; white-space: nowrap;
+              overflow: hidden; text-overflow: ellipsis; }
+.tree .cell.name { text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.tree .row.header { background: #f6f8fa; font-weight: 600; color: #57606a; }
+.tree .row.header .cell { padding: 8px 12px; }
+.tree summary.row { cursor: pointer; list-style: none; background: #f6f8fa; font-weight: 600; }
+.tree summary.row::-webkit-details-marker { display: none; }
+.tree summary .name::before { content: "▸ "; color: #57606a; }
+.tree details[open] > summary .name::before { content: "▾ "; }
+.tree summary.row:hover, .tree .row.file:hover { background: #eaeef2; }
+</style></head>
+<body>
+<header><h1>🦡 Badgers Coverage Report</h1>
+<div class="meta">devgony/badgers @ 052a192 · generated 2026-07-21T06:18:30.607350006Z</div></header>
+<main>
+<div class="cards">
+<div class="card"><div class="label">Total line coverage</div>
+<div class="value">78.12%</div>
+<div class="sub">25/32 lines · <span class="up">+16.59%p</span> vs base snapshot</div></div>
+<div class="card"><div class="label">Diff coverage (changed lines)</div>
+<div class="value">83.33%</div>
+<div class="sub">5/6 changed executable lines</div></div>
+</div>
+<div class="tree">
+<div class="row header">
+<span class="cell name">File</span><span class="cell">Lines</span>
+<span class="cell">Covered</span><span class="cell">Coverage</span>
+<span class="cell">Δ</span><span class="cell">Diff coverage</span></div>
+<details class="dirnode" open><summary class="row dir">
+<span class="cell name" style="padding-left:12px">pkg/</span>
+<span class="cell">32</span><span class="cell">25</span>
+<span class="cell">78.12%</span><span class="cell"><span class="up">+16.59%p</span></span>
+<span class="cell">5/6 (83.33%)</span></summary>
+<details class="dirnode"><summary class="row dir">
+<span class="cell name" style="padding-left:30px">features/math/</span>
+<span class="cell">6</span><span class="cell">3</span>
+<span class="cell">50.00%</span><span class="cell"><span class="flat">±0.00%p</span></span>
+<span class="cell">–</span></summary>
+<div class="row file">
+<span class="cell name" style="padding-left:66px"><a href="file-2.html">advanced.py</a></span>
+<span class="cell">6</span><span class="cell">3</span>
+<span class="cell">50.00%</span><span class="cell"><span class="flat">±0.00%p</span></span>
+<span class="cell">–</span></div>
+</details>
+<div class="row file">
+<span class="cell name" style="padding-left:48px"><a href="file-0.html">__init__.py</a></span>
+<span class="cell">0</span><span class="cell">0</span>
+<span class="cell"><span class="flat">no executable lines</span></span><span class="cell"><span class="flat">n/a</span></span>
+<span class="cell">–</span></div>
+<div class="row file">
+<span class="cell name" style="padding-left:48px"><a href="file-1.html">calc.py</a></span>
+<span class="cell">26</span><span class="cell">22</span>
+<span class="cell">84.62%</span><span class="cell"><span class="up">+19.62%p</span></span>
+<span class="cell">5/6 (83.33%)</span></div>
+</details>
+
+</div>
+</main></body></html>
