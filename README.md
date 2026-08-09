@@ -258,16 +258,45 @@ pushed with the workflow's default `GITHUB_TOKEN` [never trigger a GitHub
 Pages build](https://docs.github.com/en/actions/concepts/security/github_token),
 so Badgers explicitly requests one through the REST API after each push.
 That request needs `pages: write` on the job (or a PAT/GitHub App token as
-`github-token`); without it the push succeeds but the published site never
+`pages-token`); without it the push succeeds but the published site never
 updates, and the action emits a warning.
 
-Like the storage branch, the Pages branch carries exactly one parentless
-commit per deployment: each push replaces the branch while keeping every
-previously deployed report directory, so history never grows toward the
-1 GB Pages limit. The Pages branch must therefore not be branch-protected.
+The Pages inputs mirror the repository storage inputs: `pages-repo`,
+`pages-branch`, `pages-prefix`, and `pages-token`. By default the report
+deploys to the root of the current repository's `gh-pages` branch. Badgers
+then treats the branch as its own: each deployment replaces the branch with
+exactly one parentless commit (keeping every previously deployed report
+directory), so history never grows toward the 1 GB Pages limit. Such a
+badgers-owned branch must not be branch-protected.
+
+Setting `pages-prefix`, or pointing `pages-repo` at another repository,
+marks the branch as **shared**: Badgers appends regular commits, never
+rewrites history, writes only inside the prefix, and leaves root files such
+as `.nojekyll` and `CNAME` untouched. Concurrent pushes from other jobs are
+handled by re-cloning and re-applying the report (five attempts with
+backoff), which cannot produce merge conflicts. This deploys coverage into
+an existing project site without enabling Pages anywhere new:
+
+```yaml
+pages: true
+pages-repo: gluesql/gluesql.github.io
+pages-prefix: coverage/badgers
+pages-token: ${{ secrets.PAGES_DEPLOY_PAT }}
+```
+
+The report lands at `https://gluesql.org/coverage/badgers/pr-1234/`: the
+`report-url` output resolves the target repository's Pages configuration,
+including custom domains and `owner.github.io` root sites. Cross-repository
+deployment needs a fine-grained PAT or GitHub App installation token with
+Contents write and Pages write access on the target repository — the
+default `GITHUB_TOKEN` cannot push there, and `pages-token` keeps that
+credential separate from the `github-token` used for PR comments and check
+annotations. PAT and GitHub App pushes also trigger Pages builds natively.
+
 `pages-retention` defaults to `all`; set a positive integer to keep only
 that many `pr-*` report directories (the highest PR numbers, plus the
-current deployment). `branch-*` directories are always kept.
+current deployment) under the prefix. `branch-*` directories and anything
+outside the prefix are always kept.
 
 `fail-on-partial-branches` (default `false`) is the branch-coverage analog: it
 fails while changed lines still have partially taken branches. It requires

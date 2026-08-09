@@ -102,9 +102,30 @@ inputs:
       'latest' (default) prunes commits not referenced by any pointer after
       each push. 'all' skips pruning and keeps full history.
     default: "latest"
+  pages-repo:
+    description: >
+      Repository whose Pages branch receives the HTML report (owner/repo).
+      Empty deploys to the repository running the workflow; any other
+      repository requires pages-token.
+    default: ""
   pages-branch:
     description: Branch used for GitHub Pages deployment
     default: "gh-pages"
+  pages-prefix:
+    description: >
+      Directory prefix inside the Pages branch. Empty deploys to the branch
+      root. Setting a prefix (or pages-repo) marks the branch as shared with
+      other content, so Badgers appends regular commits instead of rewriting
+      history and leaves files outside the prefix alone.
+    default: ""
+  pages-token:
+    description: >
+      Contents-write token used to push the Pages branch and call the Pages
+      API. Empty falls back to github-token, which only works when
+      pages-repo is the current repository; use a fine-grained PAT or
+      GitHub App installation token with Contents and Pages write access on
+      the target repository otherwise.
+    default: ""
   pages-retention:
     description: >
       Retention policy for pr-* report directories on the Pages branch.
@@ -113,7 +134,9 @@ inputs:
       plus the current deployment; branch-* directories are always kept.
     default: "all"
   github-token:
-    description: Token used to push the Pages branch and enable Pages
+    description: >
+      Token used to post PR comments and check annotations, and the Pages
+      deployment fallback when pages-token is empty.
     default: ${{ github.token }}
 
 outputs:
@@ -684,10 +707,12 @@ runs:
           github.event.pull_request.head.repo.full_name == github.repository))
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.github-token }}
+        GH_TOKEN: ${{ inputs.pages-token || inputs.github-token }}
         BADGERS_EVENT_NAME: ${{ github.event_name }}
         BADGERS_PR_NUMBER: ${{ github.event.pull_request.number }}
+        BADGERS_PAGES_REPO: ${{ inputs.pages-repo }}
         BADGERS_PAGES_BRANCH: ${{ inputs.pages-branch }}
+        BADGERS_PAGES_PREFIX: ${{ inputs.pages-prefix }}
         BADGERS_PAGES_RETENTION: ${{ inputs.pages-retention }}
         BADGERS_WORKING_DIRECTORY: ${{ inputs.working-directory }}
       run: |
@@ -704,6 +729,25 @@ runs:
           echo "::error::pages-retention must be 'all' or a positive integer"
           exit 1
         fi
+        PAGES_REPO="${BADGERS_PAGES_REPO:-$GITHUB_REPOSITORY}"
+        if [[ ! "$PAGES_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
+           [[ "$PAGES_REPO" == ./* || "$PAGES_REPO" == */. ||
+              "$PAGES_REPO" == ../* || "$PAGES_REPO" == */.. ]]; then
+          echo "::error::pages-repo must be a safe owner/repo"
+          exit 1
+        fi
+        PAGES_PREFIX=$(python3 -c \
+          'import sys; p=sys.argv[1]; parts=p.strip("/").split("/") if p.strip("/") else []; bad="\\" in p or any(x in ("", ".", "..") for x in parts); sys.exit("unsafe pages prefix") if bad else print("/".join(parts))' \
+          "$BADGERS_PAGES_PREFIX")
+        # A branch is badgers-owned only when it lives in this repository and
+        # holds nothing but reports; only then may history be rewritten. A
+        # prefix or foreign pages-repo means the branch is shared, so Badgers
+        # appends regular commits and leaves root files (.nojekyll, CNAME)
+        # and content outside the prefix untouched.
+        HISTORY_MODE=append
+        if [ "$PAGES_REPO" = "$GITHUB_REPOSITORY" ] && [ -z "$PAGES_PREFIX" ]; then
+          HISTORY_MODE=replace
+        fi
         if [ "$BADGERS_EVENT_NAME" = "pull_request" ]; then
           if [[ ! "$BADGERS_PR_NUMBER" =~ ^[0-9]+$ ]]; then
             echo "::error::invalid pull request number"
@@ -714,11 +758,12 @@ runs:
           git check-ref-format --branch "$GITHUB_REF_NAME" >/dev/null
           DEST="branch-$(echo "${GITHUB_REF_NAME}" | tr '/' '-')"
         fi
+        TARGET_DIR="${PAGES_PREFIX:+$PAGES_PREFIX/}$DEST"
 
         echo "::add-mask::$GH_TOKEN"
         AUTH_HEADER=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
         echo "::add-mask::$AUTH_HEADER"
-        REMOTE="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+        REMOTE="${GITHUB_SERVER_URL}/${PAGES_REPO}.git"
 
         DEPLOYED=false
         for attempt in 1 2 3 4 5; do
@@ -727,10 +772,12 @@ runs:
           if git -c "http.extraheader=AUTHORIZATION: basic $AUTH_HEADER" \
               clone --depth 1 --branch "$PAGES_BRANCH" "$REMOTE" "$SITE" 2>/dev/null; then
             CLONED_SHA=$(git -C "$SITE" rev-parse HEAD)
-            # Discard history only: the orphan checkout keeps the working
-            # tree and index, so other PRs' and branches' reports survive
-            # into the single new parentless commit.
-            git -C "$SITE" checkout -q --orphan badgers-orphan
+            if [ "$HISTORY_MODE" = "replace" ]; then
+              # Discard history only: the orphan checkout keeps the working
+              # tree and index, so other PRs' and branches' reports survive
+              # into the single new parentless commit.
+              git -C "$SITE" checkout -q --orphan badgers-orphan
+            fi
           else
             rm -rf "$SITE"
             mkdir "$SITE"
@@ -740,13 +787,15 @@ runs:
           git -C "$SITE" config user.name "github-actions[bot]"
           git -C "$SITE" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          rm -rf "${SITE:?}/${DEST}"
-          mkdir -p "$SITE/$DEST"
-          cp -R "$REPORT_SRC/." "$SITE/$DEST/"
-          touch "$SITE/.nojekyll"
+          rm -rf "${SITE:?}/${TARGET_DIR}"
+          mkdir -p "$SITE/$TARGET_DIR"
+          cp -R "$REPORT_SRC/." "$SITE/$TARGET_DIR/"
+          if [ "$HISTORY_MODE" = "replace" ]; then
+            touch "$SITE/.nojekyll"
+          fi
           if [ "$BADGERS_PAGES_RETENTION" != "all" ]; then
             python3 "$GITHUB_ACTION_PATH/scripts/pages_retention.py" \
-              "$SITE" "$BADGERS_PAGES_RETENTION" "$DEST"
+              "$SITE${PAGES_PREFIX:+/$PAGES_PREFIX}" "$BADGERS_PAGES_RETENTION" "$DEST"
           fi
           git -C "$SITE" add -A
           if [ -n "$CLONED_SHA" ] &&
@@ -756,10 +805,10 @@ runs:
             DEPLOYED=true
             break
           fi
-          git -C "$SITE" commit -q -m "coverage report: $DEST @ ${GITHUB_SHA::7}"
+          git -C "$SITE" commit -q -m "coverage report: $TARGET_DIR @ ${GITHUB_SHA::7}"
 
           PUSH_ARGS=()
-          if [ -n "$CLONED_SHA" ]; then
+          if [ "$HISTORY_MODE" = "replace" ] && [ -n "$CLONED_SHA" ]; then
             PUSH_ARGS=("--force-with-lease=refs/heads/$PAGES_BRANCH:$CLONED_SHA")
           fi
           if git -C "$SITE" \
@@ -776,27 +825,33 @@ runs:
           exit 1
         fi
 
-        gh api "repos/${GITHUB_REPOSITORY}/pages" \
+        gh api "repos/${PAGES_REPO}/pages" \
           -f "source[branch]=$PAGES_BRANCH" -f "source[path]=/" \
           --method POST >/dev/null 2>&1 \
           || echo "Pages already enabled or token lacks pages:write (enable once in Settings → Pages)"
 
         # Commits pushed with the workflow's GITHUB_TOKEN never trigger the
         # Pages build on their own, so a build must be requested explicitly.
-        if gh api --method POST "repos/${GITHUB_REPOSITORY}/pages/builds" >/dev/null 2>&1; then
+        # PAT and GitHub App pushes do trigger builds; the extra request is
+        # harmless because GitHub queues it.
+        if gh api --method POST "repos/${PAGES_REPO}/pages/builds" >/dev/null 2>&1; then
           echo "requested a GitHub Pages build"
         else
-          echo "::warning::Pushed ${PAGES_BRANCH} but could not request a Pages build; the report will not appear until one runs. Grant the job 'pages: write', or pass a PAT or GitHub App token as github-token."
+          echo "::warning::Pushed ${PAGES_BRANCH} but could not request a Pages build; the report will not appear until one runs. Grant the job 'pages: write', or pass a PAT or GitHub App token as pages-token."
         fi
 
-        OWNER="${GITHUB_REPOSITORY%%/*}"
-        REPO="${GITHUB_REPOSITORY##*/}"
-        URL=$(gh api "repos/${GITHUB_REPOSITORY}/pages" --jq .html_url 2>/dev/null \
+        OWNER="${PAGES_REPO%%/*}"
+        REPO="${PAGES_REPO##*/}"
+        URL=$(gh api "repos/${PAGES_REPO}/pages" --jq .html_url 2>/dev/null \
           | head -n1 | tr -d '\r' || true)
-        if [[ ! "$URL" =~ ^https://[A-Za-z0-9.-]+(/[^[:space:]]*)?$ ]]; then
-          URL="https://${OWNER}.github.io/${REPO}/"
+        if [[ ! "$URL" =~ ^https?://[A-Za-z0-9.-]+(/[^[:space:]]*)?$ ]]; then
+          if [ "$REPO" = "${OWNER}.github.io" ]; then
+            URL="https://${OWNER}.github.io/"
+          else
+            URL="https://${OWNER}.github.io/${REPO}/"
+          fi
         fi
-        REPORT_URL="${URL%/}/${DEST}/"
+        REPORT_URL="${URL%/}/${TARGET_DIR}/"
         echo "report-url=$REPORT_URL" >> "$GITHUB_OUTPUT"
         {
           echo ''
