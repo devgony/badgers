@@ -216,7 +216,11 @@ steps:
 `coverage-command` is any shell command that runs your tests and writes the
 LCOV file named by `lcov-file` (default `coverage/lcov.info`). The same
 command rebuilds the baseline at the merge-base checkout when no stored
-snapshot is available.
+snapshot is available. The temporary merge-base worktree is removed once the
+baseline snapshot is collected, even when the command fails. The rebuild
+still compiles the project a second time; Rust projects can point both
+builds at one build directory with `env: CARGO_TARGET_DIR` if disk is tight,
+at the risk of the two coverage runs interfering.
 
 `cli-version` defaults to `auto`: `@v1` selects the newest stable `v1.x.y`
 release containing binaries for the current runner, while an exact Action ref

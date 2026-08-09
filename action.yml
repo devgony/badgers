@@ -343,7 +343,17 @@ runs:
         git check-ref-format --branch "$BADGERS_BASE_REF" >/dev/null
         MERGE_BASE=$(git merge-base "origin/${BADGERS_BASE_REF}" HEAD)
         echo "merge-base: $MERGE_BASE"
+        REPO_DIR="$PWD"
+        cleanup_worktree() {
+          cd "$REPO_DIR"
+          git worktree remove --force /tmp/badgers-base 2>/dev/null || rm -rf /tmp/badgers-base
+          git worktree prune
+        }
+        if [ -e /tmp/badgers-base ]; then
+          cleanup_worktree
+        fi
         git worktree add /tmp/badgers-base "$MERGE_BASE"
+        trap cleanup_worktree EXIT
         BASE_DIR="/tmp/badgers-base/$BADGERS_WORKING_DIRECTORY"
         if [ -d "$BASE_DIR" ]; then
           cd "$BASE_DIR"
