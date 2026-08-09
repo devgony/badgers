@@ -3,9 +3,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use badge_rs_core::compare::{ChangedLines, ComparisonAnalysis, CoverageScopeChangeKind};
+use badge_rs_core::compare::{ComparisonAnalysis, CoverageScopeChangeKind};
 use badge_rs_core::coverage_pct;
-use badge_rs_core::diff::parse_unified_diff;
 use badge_rs_github::{CheckAnnotation, CommentAction, GithubClient};
 use clap::Args;
 
@@ -14,7 +13,7 @@ use crate::github_storage::{
     html_escape,
 };
 use crate::render::{bounded_scope_entries, render_omitted_scope_count};
-use crate::report::{compare_for_report, git_diff_output, git_path_prefix, read_snapshot};
+use crate::report::{compare_for_report, git_path_prefix, read_snapshot, resolve_changed_lines};
 
 #[derive(Args, Debug)]
 pub struct GithubArgs {
@@ -29,6 +28,10 @@ pub struct GithubArgs {
     /// Git range for changed lines, e.g. "origin/main...HEAD" (runs git diff)
     #[arg(long, value_name = "RANGE")]
     pub git_diff: Option<String>,
+
+    /// Precomputed unified diff file (alternative to --git-diff)
+    #[arg(long, value_name = "PATH", conflicts_with = "git_diff")]
+    pub diff_file: Option<PathBuf>,
 
     /// Repository root for git
     #[arg(long, value_name = "PATH", default_value = ".")]
@@ -95,10 +98,11 @@ pub fn run(args: &GithubArgs) -> Result<()> {
 
     let head = read_snapshot(&args.head)?;
     let base = args.base.as_deref().map(read_snapshot).transpose()?;
-    let changed = match &args.git_diff {
-        Some(range) => parse_unified_diff(&git_diff_output(&args.repo_root, range)?),
-        None => ChangedLines::default(),
-    };
+    let changed = resolve_changed_lines(
+        args.git_diff.as_deref(),
+        args.diff_file.as_deref(),
+        &args.repo_root,
+    )?;
     let comparison = compare_for_report(
         base.as_ref(),
         &head,
@@ -717,6 +721,7 @@ mod tests {
             head: PathBuf::new(),
             base: None,
             git_diff: None,
+            diff_file: None,
             repo_root: PathBuf::new(),
             repo: "owner/repo".into(),
             pr: 5,

@@ -6,16 +6,15 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use badge_rs_core::CoverageSnapshot;
 use badge_rs_core::compare::{
-    COMPARISON_SCHEMA_VERSION, ChangedLines, ComparisonAnalysis, ComparisonAnalysisDocument,
+    COMPARISON_SCHEMA_VERSION, ComparisonAnalysis, ComparisonAnalysisDocument,
     CoverageScopeChangeKind, FileDelta,
 };
 use badge_rs_core::coverage_pct;
-use badge_rs_core::diff::parse_unified_diff;
 use clap::Args;
 use sha2::{Digest, Sha256};
 
 use crate::render::{bounded_scope_entries, render_omitted_scope_count};
-use crate::report::{compare_for_report, git_diff_output, git_path_prefix, read_snapshot};
+use crate::report::{compare_for_report, git_path_prefix, read_snapshot, resolve_changed_lines};
 
 #[derive(Args, Debug)]
 pub struct MarkdownArgs {
@@ -31,7 +30,7 @@ pub struct MarkdownArgs {
     #[arg(long, value_name = "RANGE")]
     pub git_diff: Option<String>,
 
-    /// Precomputed zero-context unified diff file (alternative to --git-diff)
+    /// Precomputed unified diff file (alternative to --git-diff)
     #[arg(long, value_name = "PATH", conflicts_with = "git_diff")]
     pub diff_file: Option<PathBuf>,
 
@@ -64,16 +63,11 @@ pub struct MarkdownArgs {
 pub fn run(args: &MarkdownArgs) -> Result<()> {
     let head = read_snapshot(&args.head)?;
     let base = args.base.as_deref().map(read_snapshot).transpose()?;
-    let changed = if let Some(range) = &args.git_diff {
-        parse_unified_diff(&git_diff_output(&args.repo_root, range)?)
-    } else if let Some(path) = &args.diff_file {
-        parse_unified_diff(
-            &fs::read_to_string(path)
-                .with_context(|| format!("failed to read diff file '{}'", path.display()))?,
-        )
-    } else {
-        ChangedLines::default()
-    };
+    let changed = resolve_changed_lines(
+        args.git_diff.as_deref(),
+        args.diff_file.as_deref(),
+        &args.repo_root,
+    )?;
     let comparison = compare_for_report(
         base.as_ref(),
         &head,
