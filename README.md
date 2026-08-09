@@ -261,6 +261,14 @@ That request needs `pages: write` on the job (or a PAT/GitHub App token as
 `github-token`); without it the push succeeds but the published site never
 updates, and the action emits a warning.
 
+Like the storage branch, the Pages branch carries exactly one parentless
+commit per deployment: each push replaces the branch while keeping every
+previously deployed report directory, so history never grows toward the
+1 GB Pages limit. The Pages branch must therefore not be branch-protected.
+`pages-retention` defaults to `all`; set a positive integer to keep only
+that many `pr-*` report directories (the highest PR numbers, plus the
+current deployment). `branch-*` directories are always kept.
+
 `fail-on-partial-branches` (default `false`) is the branch-coverage analog: it
 fails while changed lines still have partially taken branches. It requires
 branch data in the LCOV file. The matching local flag is

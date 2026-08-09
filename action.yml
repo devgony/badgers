@@ -105,6 +105,13 @@ inputs:
   pages-branch:
     description: Branch used for GitHub Pages deployment
     default: "gh-pages"
+  pages-retention:
+    description: >
+      Retention policy for pr-* report directories on the Pages branch.
+      'all' (default) keeps every deployed report. A positive integer keeps
+      only that many pull request directories with the highest PR numbers
+      plus the current deployment; branch-* directories are always kept.
+    default: "all"
   github-token:
     description: Token used to push the Pages branch and enable Pages
     default: ${{ github.token }}
@@ -681,6 +688,7 @@ runs:
         BADGERS_EVENT_NAME: ${{ github.event_name }}
         BADGERS_PR_NUMBER: ${{ github.event.pull_request.number }}
         BADGERS_PAGES_BRANCH: ${{ inputs.pages-branch }}
+        BADGERS_PAGES_RETENTION: ${{ inputs.pages-retention }}
         BADGERS_WORKING_DIRECTORY: ${{ inputs.working-directory }}
       run: |
         set -euo pipefail
@@ -689,6 +697,11 @@ runs:
         git check-ref-format --branch "$PAGES_BRANCH" >/dev/null
         if [[ ! "$GITHUB_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
           echo "::error::invalid commit SHA"
+          exit 1
+        fi
+        if [ "$BADGERS_PAGES_RETENTION" != "all" ] &&
+           [[ ! "$BADGERS_PAGES_RETENTION" =~ ^[1-9][0-9]*$ ]]; then
+          echo "::error::pages-retention must be 'all' or a positive integer"
           exit 1
         fi
         if [ "$BADGERS_EVENT_NAME" = "pull_request" ]; then
@@ -702,38 +715,66 @@ runs:
           DEST="branch-$(echo "${GITHUB_REF_NAME}" | tr '/' '-')"
         fi
 
-        SITE=$(mktemp -d)
         echo "::add-mask::$GH_TOKEN"
         AUTH_HEADER=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
         echo "::add-mask::$AUTH_HEADER"
         REMOTE="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
-        if git -c "http.extraheader=AUTHORIZATION: basic $AUTH_HEADER" \
-            clone --depth 1 --branch "$PAGES_BRANCH" "$REMOTE" "$SITE" 2>/dev/null; then
-          cd "$SITE"
-        else
-          cd "$SITE"
-          git init -q -b "$PAGES_BRANCH"
-          git remote add origin "$REMOTE"
-        fi
-        git config user.name "github-actions[bot]"
-        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-        rm -rf "$DEST"
-        mkdir -p "$DEST"
-        cp -R "$REPORT_SRC/." "$DEST/"
-        touch .nojekyll
-        git add -A
-        git commit -q -m "coverage report: $DEST @ ${GITHUB_SHA::7}" || {
-          echo "no changes to deploy"; }
-        for attempt in 1 2 3; do
+        DEPLOYED=false
+        for attempt in 1 2 3 4 5; do
+          SITE=$(mktemp -d)
+          CLONED_SHA=""
           if git -c "http.extraheader=AUTHORIZATION: basic $AUTH_HEADER" \
-              push origin "$PAGES_BRANCH"; then
+              clone --depth 1 --branch "$PAGES_BRANCH" "$REMOTE" "$SITE" 2>/dev/null; then
+            CLONED_SHA=$(git -C "$SITE" rev-parse HEAD)
+            # Discard history only: the orphan checkout keeps the working
+            # tree and index, so other PRs' and branches' reports survive
+            # into the single new parentless commit.
+            git -C "$SITE" checkout -q --orphan badgers-orphan
+          else
+            rm -rf "$SITE"
+            mkdir "$SITE"
+            git -C "$SITE" init -q -b "$PAGES_BRANCH"
+            git -C "$SITE" remote add origin "$REMOTE"
+          fi
+          git -C "$SITE" config user.name "github-actions[bot]"
+          git -C "$SITE" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          rm -rf "${SITE:?}/${DEST}"
+          mkdir -p "$SITE/$DEST"
+          cp -R "$REPORT_SRC/." "$SITE/$DEST/"
+          touch "$SITE/.nojekyll"
+          if [ "$BADGERS_PAGES_RETENTION" != "all" ]; then
+            python3 "$GITHUB_ACTION_PATH/scripts/pages_retention.py" \
+              "$SITE" "$BADGERS_PAGES_RETENTION" "$DEST"
+          fi
+          git -C "$SITE" add -A
+          if [ -n "$CLONED_SHA" ] &&
+              [ "$(git -C "$SITE" write-tree)" = \
+                "$(git -C "$SITE" rev-parse "${CLONED_SHA}^{tree}")" ]; then
+            echo "pages branch already up to date"
+            DEPLOYED=true
             break
           fi
-          echo "push failed (attempt $attempt), rebasing..."
-          git -c "http.extraheader=AUTHORIZATION: basic $AUTH_HEADER" \
-            pull --rebase origin "$PAGES_BRANCH"
+          git -C "$SITE" commit -q -m "coverage report: $DEST @ ${GITHUB_SHA::7}"
+
+          PUSH_ARGS=()
+          if [ -n "$CLONED_SHA" ]; then
+            PUSH_ARGS=("--force-with-lease=refs/heads/$PAGES_BRANCH:$CLONED_SHA")
+          fi
+          if git -C "$SITE" \
+              -c "http.extraheader=AUTHORIZATION: basic $AUTH_HEADER" \
+              push ${PUSH_ARGS[@]+"${PUSH_ARGS[@]}"} origin "HEAD:refs/heads/$PAGES_BRANCH"; then
+            DEPLOYED=true
+            break
+          fi
+          rm -rf "$SITE"
+          sleep $((attempt * 2))
         done
+        if [ "$DEPLOYED" != "true" ]; then
+          echo "::error::failed to push the Pages branch after 5 attempts"
+          exit 1
+        fi
 
         gh api "repos/${GITHUB_REPOSITORY}/pages" \
           -f "source[branch]=$PAGES_BRANCH" -f "source[path]=/" \
