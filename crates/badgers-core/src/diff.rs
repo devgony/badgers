@@ -3,13 +3,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::compare::ChangedLines;
 
 /// Extracts added/modified line numbers (new-file side) per path from
-/// unified diff text (`git diff --unified=0 base...head` recommended).
+/// unified diff text, at any context width.
 ///
-/// Hunk header format: `@@ -<old_start>[,<old_count>] +<new_start>[,<new_count>] @@`.
-/// A missing count defaults to 1; `new_count == 0` (pure deletion) adds nothing.
+/// Hunk bodies are walked so that only `+` lines count as changed. Trusting the
+/// `@@ -<old> +<new_start>[,<new_count>] @@` range instead would also mark the
+/// surrounding context, which matters because GitHub's API only ever serves
+/// diffs with three lines of context.
 pub fn parse_unified_diff(text: &str) -> ChangedLines {
     let mut map: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
     let mut current: Option<String> = None;
+    let mut new_line: Option<u32> = None;
 
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix("+++ ") {
@@ -19,33 +22,39 @@ pub fn parse_unified_diff(text: &str) -> ChangedLines {
             } else {
                 Some(target.strip_prefix("b/").unwrap_or(target).to_string())
             };
+            new_line = None;
             continue;
         }
         if let Some(rest) = line.strip_prefix("@@ ") {
-            let Some(path) = &current else { continue };
-            let Some((start, count)) = parse_new_side(rest) else {
-                continue;
-            };
-            if count == 0 {
-                continue;
+            // A pure deletion starts the new side at 0, leaving no line to mark.
+            new_line = parse_new_start(rest).filter(|start| *start > 0);
+            continue;
+        }
+        let (Some(path), Some(cursor)) = (current.as_ref(), new_line.as_mut()) else {
+            continue;
+        };
+        match line.as_bytes().first() {
+            Some(b'+') => {
+                map.entry(path.clone()).or_default().insert(*cursor);
+                *cursor += 1;
             }
-            let entry = map.entry(path.clone()).or_default();
-            entry.extend(start..start.saturating_add(count));
+            Some(b'-') => {}
+            // "\ No newline at end of file" annotates the previous line.
+            Some(b'\\') => {}
+            _ => *cursor += 1,
         }
     }
 
     ChangedLines(map)
 }
 
-fn parse_new_side(hunk: &str) -> Option<(u32, u32)> {
+fn parse_new_start(hunk: &str) -> Option<u32> {
     let plus_field = hunk
         .split_whitespace()
         .find(|field| field.starts_with('+'))?;
     let spec = &plus_field[1..];
-    match spec.split_once(',') {
-        Some((start, count)) => Some((start.parse().ok()?, count.parse().ok()?)),
-        None => Some((spec.parse().ok()?, 1)),
-    }
+    let start = spec.split_once(',').map_or(spec, |(start, _)| start);
+    start.parse().ok()
 }
 
 #[cfg(test)]
@@ -112,7 +121,99 @@ index 111..222 100644
                 .iter()
                 .copied()
                 .collect::<Vec<_>>(),
-            vec![1, 2]
+            vec![1]
+        );
+    }
+
+    #[test]
+    fn ignores_context_lines_around_additions() {
+        let diff = "\
+diff --git a/pkg/calc.py b/pkg/calc.py
+--- a/pkg/calc.py
++++ b/pkg/calc.py
+@@ -1,5 +1,6 @@
+ one
+ two
++inserted
+ three
+ four
+ five
+";
+        let changed = parse_unified_diff(diff);
+        assert_eq!(
+            changed
+                .for_path("pkg/calc.py")
+                .unwrap()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![3]
+        );
+    }
+
+    #[test]
+    fn tracks_new_side_across_deletions_and_no_newline_markers() {
+        let diff = "\
+--- a/pkg/calc.py
++++ b/pkg/calc.py
+@@ -1,6 +1,5 @@
+ keep
+-removed
+-also removed
++replacement
+ tail
+\\ No newline at end of file
++appended
+";
+        let changed = parse_unified_diff(diff);
+        assert_eq!(
+            changed
+                .for_path("pkg/calc.py")
+                .unwrap()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![2, 4]
+        );
+    }
+
+    #[test]
+    fn parses_multiple_files_in_one_diff() {
+        let diff = "\
+diff --git a/a.rs b/a.rs
+--- a/a.rs
++++ b/a.rs
+@@ -10,3 +10,4 @@ fn a() {
+ ctx
++added_in_a
+ ctx
+ ctx
+diff --git a/b.rs b/b.rs
+--- a/b.rs
++++ b/b.rs
+@@ -1,2 +1,3 @@
+ ctx
++added_in_b
+ ctx
+";
+        let changed = parse_unified_diff(diff);
+        assert_eq!(
+            changed
+                .for_path("a.rs")
+                .unwrap()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![11]
+        );
+        assert_eq!(
+            changed
+                .for_path("b.rs")
+                .unwrap()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![2]
         );
     }
 }
