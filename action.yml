@@ -136,6 +136,7 @@ runs:
         if ! VERSION=$(python3 "$BADGERS_ACTION_PATH/scripts/resolve_action_release.py" \
           --cli-version "$BADGERS_CLI_VERSION" \
           --action-ref "$BADGERS_ACTION_REF" \
+          --action-path "$BADGERS_ACTION_PATH" \
           --runner-os "$BADGERS_RUNNER_OS" \
           --runner-arch "$BADGERS_RUNNER_ARCH"); then
           exit 1

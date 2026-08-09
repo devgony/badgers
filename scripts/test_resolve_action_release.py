@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 from . import resolve_action_release as resolver
 
@@ -50,6 +52,35 @@ class ResolveActionReleaseTests(unittest.TestCase):
         )
         self.assertIsNone(resolver.release_selector("auto", "main"))
         self.assertIsNone(resolver.release_selector("auto", "0123456789abcdef"))
+
+    def test_pinned_sha_resolves_release_from_checkout_manifest(self) -> None:
+        sha = "0123456789abcdef0123456789abcdef01234567"
+        with tempfile.TemporaryDirectory() as action_path:
+            _ = (Path(action_path) / "Cargo.toml").write_text(
+                "[workspace]\n"
+                'members = ["crates/*"]\n'
+                "\n"
+                "[workspace.package]\n"
+                'version = "2.3.0"\n'
+                "\n"
+                "[workspace.dependencies]\n"
+                'badge-rs-core = { path = "crates/badgers-core", version = "9.9.9" }\n',
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                resolver.pinned_release(sha, action_path), ("exact", "v2.3.0")
+            )
+            self.assertIsNone(resolver.pinned_release("main", action_path))
+            self.assertIsNone(resolver.pinned_release(sha[:12], action_path))
+
+    def test_pinned_sha_without_manifest_version_falls_back(self) -> None:
+        sha = "0123456789abcdef0123456789abcdef01234567"
+        with tempfile.TemporaryDirectory() as action_path:
+            self.assertIsNone(resolver.pinned_release(sha, action_path))
+            _ = (Path(action_path) / "Cargo.toml").write_text(
+                '[package]\nversion = "1.0.0"\n', encoding="utf-8"
+            )
+            self.assertIsNone(resolver.pinned_release(sha, action_path))
 
     def test_source_and_exact_overrides(self) -> None:
         self.assertIsNone(resolver.release_selector("source", "v1"))

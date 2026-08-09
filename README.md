@@ -109,9 +109,11 @@ opening a browser.
 
 CI workflows do not need to install the binary themselves. Versioned
 `devgony/badgers` Action releases download the matching prebuilt binary and
-verify its checksum. Development refs such as `main`, commit SHAs, unsupported
-platforms, and releases without binary assets fall back to building from
-source.
+verify its checksum. Commit SHA pins resolve the release recorded in the
+pinned checkout's manifest, so security-hardened workflows that pin actions
+to full SHAs still get prebuilt binaries. Development refs such as `main`,
+unsupported platforms, and releases without binary assets fall back to
+building from source, and the fallback is logged.
 
 ## What It Does
 
@@ -233,10 +235,12 @@ the merge-base on a baseline miss.
 
 `cli-version` defaults to `auto`: `@v1` selects the newest stable `v1.x.y`
 release containing binaries for the current runner, while an exact Action ref
-such as `@v1.2.3` selects only that release. Set an exact `cli-version` to use a
-released CLI from `main` or a commit SHA, set it to `latest` to track the newest
-stable prebuilt CLI independently of the Action ref, or set it to `source` to
-force a local release build.
+such as `@v1.2.3` selects only that release. A full commit SHA ref selects
+the release named by the workspace version in that commit's `Cargo.toml`,
+matching the CLI the pinned action expects. Set an exact `cli-version` to use
+a released CLI from `main` or a commit SHA, set it to `latest` to track the
+newest stable prebuilt CLI independently of the Action ref, or set it to
+`source` to force a local release build.
 
 `markdown-summary` is opt-in. When enabled, Badgers adds a navigable coverage
 report to the GitHub Actions job summary. With GitHub repository storage

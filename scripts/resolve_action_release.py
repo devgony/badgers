@@ -11,6 +11,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 
@@ -22,6 +23,8 @@ STABLE_VERSION = re.compile(
     r"^v(\d+)\.(\d+)\.(\d+)(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$"
 )
 MAJOR_VERSION = re.compile(r"^v\d+$")
+SHA_ACTION_REF = re.compile(r"^[0-9a-fA-F]{40}$")
+MANIFEST_VERSION = re.compile(r'^version\s*=\s*"(\d+\.\d+\.\d+)"')
 TARGETS = {
     ("Linux", "X64"): "x86_64-unknown-linux-gnu",
     ("Linux", "ARM64"): "aarch64-unknown-linux-gnu",
@@ -50,6 +53,30 @@ def release_selector(cli_version: str, action_ref: str) -> tuple[str, str] | Non
     raise ValueError(
         "cli-version must be 'auto', 'latest', 'source', or an exact vX.Y.Z tag"
     )
+
+
+def checkout_version(action_path: str) -> str | None:
+    try:
+        text = (Path(action_path) / "Cargo.toml").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    section = ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            section = stripped
+            continue
+        if section == "[workspace.package]":
+            if match := MANIFEST_VERSION.match(stripped):
+                return match.group(1)
+    return None
+
+
+def pinned_release(action_ref: str, action_path: str) -> tuple[str, str] | None:
+    if not SHA_ACTION_REF.fullmatch(action_ref):
+        return None
+    version = checkout_version(action_path)
+    return ("exact", f"v{version}") if version else None
 
 
 def has_target_assets(release: dict[str, Any], target: str) -> bool:
@@ -114,6 +141,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cli-version", required=True)
     parser.add_argument("--action-ref", required=True)
+    parser.add_argument("--action-path", required=True)
     parser.add_argument("--runner-os", required=True)
     parser.add_argument("--runner-arch", required=True)
     return parser.parse_args()
@@ -131,7 +159,22 @@ def main() -> int:
         print(f"error: {error}", file=sys.stderr)
         return 2
     if selector is None:
-        return 0
+        if args.cli_version != "auto":
+            return 0
+        selector = pinned_release(args.action_ref, args.action_path)
+        if selector is None:
+            print(
+                f"notice: action ref '{args.action_ref}' is not a release tag; "
+                "building the CLI from source "
+                "(set cli-version to install a prebuilt release)",
+                file=sys.stderr,
+            )
+            return 0
+        print(
+            f"notice: resolved release {selector[1]} from the pinned action "
+            "commit's manifest",
+            file=sys.stderr,
+        )
 
     mode, requested = selector
     try:
