@@ -326,7 +326,12 @@ The default `github-storage-token` works when the storage repository is the
 repository running the workflow and the job grants `contents: write`. For a
 different or private repository, pass a GitHub App installation token or a
 fine-grained PAT with Contents write access. Repository writes are skipped for
-pull requests from forks.
+pull requests from forks, but baseline *reads* are not: fork pull requests
+fetch stored baselines with the default read-only fork token
+(same-repository storage) or anonymously (public storage repositories), so
+they get diff coverage without re-running the test suite at the merge-base.
+Fork runs of private cross-repository storage cannot read the secret token
+and fall back to the merge-base rebuild.
 
 ## Development
 

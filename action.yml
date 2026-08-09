@@ -254,12 +254,15 @@ runs:
           --repo "$GITHUB_REPOSITORY" \
           -o /tmp/badgers-base-snapshot.json | tee -a "$GITHUB_OUTPUT"
 
+    # Reading the storage branch needs no write access, so fork pull requests
+    # are allowed here: same-repository storage is readable with the default
+    # read-only fork token, and public storage repositories are readable
+    # anonymously. Write steps below keep the same-repository gate.
     - name: Fetch baseline snapshot from GitHub repository storage
       id: github-baseline
       if: >-
         github.event_name == 'pull_request' &&
         inputs.github-storage-repo != '' &&
-        github.event.pull_request.head.repo.full_name == github.repository &&
         steps.gcs-baseline.outputs.baseline-kind != 'exact' &&
         steps.gcs-baseline.outputs.baseline-kind != 'approximate'
       shell: bash
@@ -287,17 +290,18 @@ runs:
           'import sys; p=sys.argv[1]; parts=p.strip("/").split("/") if p.strip("/") else []; bad="\\" in p or any(x in ("", ".", "..") for x in parts); sys.exit("unsafe storage prefix") if bad else None' \
           "$BADGERS_STORAGE_PREFIX"
 
-        if [ -z "$BADGERS_STORAGE_TOKEN" ]; then
-          echo "::notice::github-storage-token is empty; rebuilding the baseline"
-          printf 'baseline-kind=none\nbaseline-sha=\n' >> "$GITHUB_OUTPUT"
-          exit 0
+        AUTH_ARGS=()
+        if [ -n "$BADGERS_STORAGE_TOKEN" ]; then
+          echo "::add-mask::$BADGERS_STORAGE_TOKEN"
+          AUTH_HEADER=$(printf 'x-access-token:%s' "$BADGERS_STORAGE_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::$AUTH_HEADER"
+          AUTH_ARGS=(-c "http.${GITHUB_SERVER_URL}/.extraheader=AUTHORIZATION: basic $AUTH_HEADER")
+        else
+          echo "::notice::github-storage-token is empty; trying anonymous read access"
         fi
-        echo "::add-mask::$BADGERS_STORAGE_TOKEN"
-        AUTH_HEADER=$(printf 'x-access-token:%s' "$BADGERS_STORAGE_TOKEN" | base64 | tr -d '\n')
-        echo "::add-mask::$AUTH_HEADER"
         REMOTE="${GITHUB_SERVER_URL}/${BADGERS_STORAGE_REPO}.git"
         STORE=$(mktemp -d)
-        if ! git -c "http.${GITHUB_SERVER_URL}/.extraheader=AUTHORIZATION: basic $AUTH_HEADER" \
+        if ! GIT_TERMINAL_PROMPT=0 git ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} \
             clone --quiet --no-checkout --depth 1 --single-branch \
             --branch "$BADGERS_STORAGE_BRANCH" \
             "$REMOTE" "$STORE"; then
