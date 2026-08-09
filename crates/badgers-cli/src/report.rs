@@ -48,16 +48,11 @@ pub fn run(args: &HtmlArgs) -> Result<()> {
     let head = read_snapshot(&args.head)?;
     let base = args.base.as_deref().map(read_snapshot).transpose()?;
 
-    let changed = if let Some(range) = &args.git_diff {
-        parse_unified_diff(&git_diff_output(&args.repo_root, range)?)
-    } else if let Some(path) = &args.diff_file {
-        parse_unified_diff(
-            &fs::read_to_string(path)
-                .with_context(|| format!("failed to read diff file '{}'", path.display()))?,
-        )
-    } else {
-        ChangedLines::default()
-    };
+    let changed = resolve_changed_lines(
+        args.git_diff.as_deref(),
+        args.diff_file.as_deref(),
+        &args.repo_root,
+    )?;
 
     let comparison = compare_for_report(
         base.as_ref(),
@@ -103,6 +98,27 @@ pub(crate) fn git_diff_output(repo_root: &Path, range: &str) -> Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Resolves changed lines from either a git range or a precomputed diff file.
+///
+/// Callers keep passing `git_diff.is_some()` as `git_backed` to
+/// [`compare_for_report`]: a diff file carries no guarantee that a git
+/// repository is present, which is what makes it usable without a checkout.
+pub(crate) fn resolve_changed_lines(
+    git_diff: Option<&str>,
+    diff_file: Option<&Path>,
+    repo_root: &Path,
+) -> Result<ChangedLines> {
+    if let Some(range) = git_diff {
+        Ok(parse_unified_diff(&git_diff_output(repo_root, range)?))
+    } else if let Some(path) = diff_file {
+        Ok(parse_unified_diff(&fs::read_to_string(path).with_context(
+            || format!("failed to read diff file '{}'", path.display()),
+        )?))
+    } else {
+        Ok(ChangedLines::default())
+    }
 }
 
 pub(crate) fn git_tree_files(repo_root: &Path, commit: &str) -> Result<BTreeSet<String>> {
@@ -842,6 +858,53 @@ mod tests {
     use badge_rs_core::{Language, LineHit, ToolVersions};
 
     use super::*;
+
+    #[test]
+    fn resolve_changed_lines_reads_a_diff_file_without_git() {
+        let temp = tempfile::tempdir().unwrap();
+        let diff_path = temp.path().join("changes.diff");
+        fs::write(
+            &diff_path,
+            "\
+--- a/pkg/calc.py
++++ b/pkg/calc.py
+@@ -1,3 +1,4 @@
+ ctx
++added
+ ctx
+ ctx
+",
+        )
+        .unwrap();
+
+        // A path that is not a git repository proves no git invocation happens.
+        let changed =
+            resolve_changed_lines(None, Some(&diff_path), Path::new("/nonexistent")).unwrap();
+
+        assert_eq!(
+            changed
+                .for_path("pkg/calc.py")
+                .unwrap()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
+    }
+
+    #[test]
+    fn resolve_changed_lines_is_empty_without_a_diff_source() {
+        let changed = resolve_changed_lines(None, None, Path::new("/nonexistent")).unwrap();
+        assert!(changed.0.is_empty());
+    }
+
+    #[test]
+    fn resolve_changed_lines_reports_a_missing_diff_file() {
+        let error =
+            resolve_changed_lines(None, Some(Path::new("/nonexistent.diff")), Path::new("."))
+                .unwrap_err();
+        assert!(error.to_string().contains("failed to read diff file"));
+    }
 
     #[test]
     fn html_explains_scope_change_and_suppresses_aggregate_deltas() {
