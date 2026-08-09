@@ -188,6 +188,7 @@ permissions:
   id-token: write
   pull-requests: write
   checks: write
+  pages: write # only needed when `pages: true`
 
 steps:
   - uses: actions/checkout@v4
@@ -247,6 +248,14 @@ all reports, comments, and snapshots are published if the pull request still
 contains uncovered changed executable lines. Combined with branch protection,
 this blocks merging until the coverage gap is closed; agents then backfill
 tests locally with `badgers cov` until the gate passes.
+
+`pages: true` deploys the HTML report to the `gh-pages` branch. Commits
+pushed with the workflow's default `GITHUB_TOKEN` [never trigger a GitHub
+Pages build](https://docs.github.com/en/actions/concepts/security/github_token),
+so Badgers explicitly requests one through the REST API after each push.
+That request needs `pages: write` on the job (or a PAT/GitHub App token as
+`github-token`); without it the push succeeds but the published site never
+updates, and the action emits a warning.
 
 `fail-on-partial-branches` (default `false`) is the branch-coverage analog: it
 fails while changed lines still have partially taken branches. It requires

@@ -739,6 +739,14 @@ runs:
           --method POST >/dev/null 2>&1 \
           || echo "Pages already enabled or token lacks pages:write (enable once in Settings → Pages)"
 
+        # Commits pushed with the workflow's GITHUB_TOKEN never trigger the
+        # Pages build on their own, so a build must be requested explicitly.
+        if gh api --method POST "repos/${GITHUB_REPOSITORY}/pages/builds" >/dev/null 2>&1; then
+          echo "requested a GitHub Pages build"
+        else
+          echo "::warning::Pushed ${PAGES_BRANCH} but could not request a Pages build; the report will not appear until one runs. Grant the job 'pages: write', or pass a PAT or GitHub App token as github-token."
+        fi
+
         OWNER="${GITHUB_REPOSITORY%%/*}"
         REPO="${GITHUB_REPOSITORY##*/}"
         URL=$(gh api "repos/${GITHUB_REPOSITORY}/pages" --jq .html_url 2>/dev/null \
