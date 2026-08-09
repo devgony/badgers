@@ -222,6 +222,14 @@ still compiles the project a second time; Rust projects can point both
 builds at one build directory with `env: CARGO_TARGET_DIR` if disk is tight,
 at the risk of the two coverage runs interfering.
 
+`base-rebuild` defaults to `auto`. Set it to `never` to skip the merge-base
+rebuild when no stored baseline snapshot matches: instead of running the
+test suite twice, the run degrades to a head-only report. Diff coverage for
+changed lines and the `fail-on-uncovered` / `fail-on-partial-branches` gates
+still work without a baseline; only the total coverage delta is omitted.
+This is the safety valve for projects whose suite is too expensive to run at
+the merge-base on a baseline miss.
+
 `cli-version` defaults to `auto`: `@v1` selects the newest stable `v1.x.y`
 release containing binaries for the current runner, while an exact Action ref
 such as `@v1.2.3` selects only that release. Set an exact `cli-version` to use a

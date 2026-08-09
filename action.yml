@@ -34,6 +34,14 @@ inputs:
       from its LCOV output, so this sidecar is the only way to include MC/DC
       data for LLVM-based toolchains. Empty disables MC/DC enrichment.
     default: ""
+  base-rebuild:
+    description: >
+      Baseline fallback when no stored snapshot matches the merge-base.
+      'auto' (default) re-runs coverage-command at the merge-base checkout.
+      'never' skips that rebuild and degrades to a head-only report; diff
+      coverage for changed lines still works, only the total coverage delta
+      is omitted.
+    default: "auto"
   pages:
     description: Deploy the HTML report to GitHub Pages (gh-pages branch)
     default: "false"
@@ -323,12 +331,14 @@ runs:
     - name: Build baseline snapshot from merge-base
       if: >-
         github.event_name == 'pull_request' &&
+        inputs.base-rebuild != 'never' &&
         steps.gcs-baseline.outputs.baseline-kind != 'exact' &&
         steps.gcs-baseline.outputs.baseline-kind != 'approximate' &&
         steps.github-baseline.outputs.baseline-kind != 'exact' &&
         steps.github-baseline.outputs.baseline-kind != 'approximate'
       shell: bash
       env:
+        BADGERS_BASE_REBUILD: ${{ inputs.base-rebuild }}
         BADGERS_BASE_REF: ${{ github.base_ref }}
         BADGERS_COVERAGE_COMMAND: ${{ inputs.coverage-command }}
         BADGERS_WORKING_DIRECTORY: ${{ inputs.working-directory }}
@@ -336,6 +346,10 @@ runs:
         BADGERS_LLVM_COV_JSON: ${{ inputs.llvm-cov-json }}
       run: |
         set -euo pipefail
+        if [ "$BADGERS_BASE_REBUILD" != "auto" ]; then
+          echo "::error::base-rebuild must be 'auto' or 'never'"
+          exit 1
+        fi
         if [ -z "$BADGERS_LCOV_FILE" ]; then
           echo "::error::lcov-file must not be empty"
           exit 1
