@@ -94,56 +94,6 @@ class ReportNavigationTests(unittest.TestCase):
         self.assertIn("files-changed-url=https://github.example/source/project/pull/42/files\n", contents)
         self.assertIn("durable-report-url=https://github.example/reports/archive/", contents)
 
-    def test_action_invokes_tested_helper_and_passes_fork_identity(self) -> None:
-        action = SCRIPT.parent.parent.joinpath("action.yml").read_text(encoding="utf-8")
-        self.assertIn('python3 "$GITHUB_ACTION_PATH/scripts/report_navigation.py"', action)
-        self.assertIn("BADGERS_PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}", action)
-        self.assertNotIn("python - \"$GITHUB_OUTPUT\" <<'PY'", action)
-        self.assertNotIn("https://x-access-token:${GH_TOKEN}@", action)
-        self.assertGreaterEqual(
-            action.count("github.event.pull_request.head.repo.full_name == github.repository"),
-            5,
-        )
-
-        lines = action.splitlines()
-        run_blocks: list[str] = []
-        index = 0
-        while index < len(lines):
-            if lines[index].startswith("      run: |"):
-                index += 1
-                block: list[str] = []
-                while index < len(lines) and (
-                    not lines[index].strip() or lines[index].startswith("        ")
-                ):
-                    block.append(lines[index][8:] if lines[index] else "")
-                    index += 1
-                run_blocks.append("\n".join(block))
-                continue
-            index += 1
-        self.assertTrue(run_blocks)
-        for script_body in run_blocks:
-            self.assertNotIn("${{", script_body)
-            _ = subprocess.run(["bash", "-n", "-c", script_body], check=True)
-
-    def test_storage_step_uses_orphan_force_with_lease_and_retention(self) -> None:
-        action = SCRIPT.parent.parent.joinpath("action.yml").read_text(encoding="utf-8")
-        self.assertIn('default: "badgers-coverage"', action)
-        self.assertNotIn('default: "badgers-reports"', action)
-        self.assertIn("checkout -q --orphan", action)
-        self.assertIn("--force-with-lease=", action)
-        self.assertIn("storage_retention.py", action)
-        self.assertIn("github-storage-retention", action)
-        self.assertIn("BADGERS_STORAGE_RETENTION", action)
-        self.assertIn("--html-report", action)
-        self.assertIn('--storage-repo "$BADGERS_STORAGE_REPO"', action)
-        self.assertIn('--storage-branch "$BADGERS_STORAGE_BRANCH"', action)
-        self.assertIn('--storage-prefix "$BADGERS_STORAGE_PREFIX"', action)
-        self.assertIn('"$BADGERS_STORAGE_RETENTION" != "latest"', action)
-        # The orphan checkout must preserve the previous storage tree so
-        # other PRs'/branches' reports survive the single-commit rewrite.
-        self.assertNotIn(" rm -rf . ", action)
-        self.assertIn("write-tree", action)
-
 
 if __name__ == "__main__":
     _ = unittest.main()

@@ -26,15 +26,8 @@ instead build from crates.io:
 cargo install badge-rs
 ```
 
-The installed binary is `badgers`. One-time GCS provisioning (bucket, workload
-identity federation, service account, IAM bindings) then takes a single input:
-
-```bash
-badgers setup gcs --project YOUR_GCP_PROJECT_ID
-```
-
-When GitHub repository storage is enabled, download and open the latest HTML
-report for a pull request with:
+The installed binary is `badgers`. When GitHub repository storage is enabled,
+download and open the latest HTML report for a pull request with:
 
 ```bash
 badgers view 547
@@ -118,10 +111,11 @@ building from source, and the fallback is logged.
 ## What It Does
 
 - Measures line coverage on every pull request update.
-- Compares PR coverage against the latest successful base branch snapshot.
+- Compares PR coverage against the stored merge-base snapshot, falling back to
+  the latest base branch snapshot or a merge-base rebuild.
 - Reports total coverage change and diff coverage for changed lines.
-- Stores coverage history outside GitHub Actions artifacts.
-- Uses Google Cloud Storage as the default backend.
+- Stores durable coverage history on a dedicated branch of a GitHub
+  repository, not in GitHub Actions artifacts.
 - Runs as a GitHub Action, with the core implementation written in Rust.
 
 ## Bring Your Own Coverage Tool
@@ -166,28 +160,32 @@ Ready-to-copy workflow files for Rust, Python, and Flutter live in
 
 ## Storage
 
-Badgers supports GCS and GitHub repository storage. Both backends store the
-same snapshot and pointer layout, and both can supply a pull request baseline
-without re-running the test suite at the merge-base. A typical layout looks
-like this:
+Badgers keeps durable coverage snapshots, comparisons, and reports on a
+dedicated branch of a GitHub repository, configured with
+`github-storage-repo`, `github-storage-branch`, `github-storage-prefix`, and
+`github-storage-token` (see [GitHub Repository Storage](#github-repository-storage)
+for the layout). Commit snapshots and `latest.json` pointers stored there
+supply pull request baselines without re-running the test suite at the merge-base.
 
-```text
-gs://coverage-bucket/badgers/repos/{owner}/{repo}/
-  commits/{sha}/coverage.json.zst
-  commits/{sha}/lcov.info.zst
-  refs/main/latest.json
-  prs/{number}/latest.json
-```
+During the job, Badgers writes the head snapshot, fetched or rebuilt baseline,
+comparison, and generated HTML and Markdown reports to runner-local files.
+The repository storage step copies the head snapshot, comparison, and reports
+to the storage branch; a fetched or rebuilt baseline is used only during that
+job. It does not use GitHub Actions artifacts. Job summaries, PR comments, and
+Check Runs may also publish coverage results, but are not used as baseline
+storage. Without `github-storage-repo`, no durable snapshots are written; each
+pull request rebuilds its baseline at the merge-base (or, with
+`base-rebuild: never`, reports head-only coverage).
 
-Badgers does not upload generated snapshots or reports as GitHub Actions
-artifacts. Use GCS or GitHub repository storage for durable coverage history.
+Optionally, `pages: true` also copies the HTML report to a GitHub Pages
+branch (see below). Pages hosting is for browsing reports; baselines are only
+read from the storage branch.
 
 ## GitHub Actions Sketch
 
 ```yaml
 permissions:
   contents: write # `read` is sufficient when repository storage/Pages are disabled
-  id-token: write
   pull-requests: write
   checks: write
   pages: write # only needed when `pages: true`
@@ -198,19 +196,11 @@ steps:
       fetch-depth: 0
       ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-  - uses: google-github-actions/auth@v3
-    with:
-      project_id: my-gcp-project
-      workload_identity_provider: projects/123456789/locations/global/workloadIdentityPools/github/providers/github
-      service_account: coverage-writer@my-gcp-project.iam.gserviceaccount.com
-
   - uses: devgony/badgers@v2
     with:
       coverage-command: >-
         cargo llvm-cov --workspace --lcov --output-path coverage/lcov.info
       lcov-file: coverage/lcov.info
-      gcs-bucket: company-coverage
-      gcs-prefix: badgers/repos/jubilee-works/timetree-planner-server
       github-storage-repo: jubilee-works/coverage-reports
       github-storage-token: ${{ secrets.BADGERS_STORAGE_TOKEN }}
       markdown-summary: true
@@ -256,10 +246,14 @@ tests locally with `badgers cov` until the gate passes.
 `pages: true` deploys the HTML report to the `gh-pages` branch. Commits
 pushed with the workflow's default `GITHUB_TOKEN` [never trigger a GitHub
 Pages build](https://docs.github.com/en/actions/concepts/security/github_token),
-so Badgers explicitly requests one through the REST API after each push.
-That request needs `pages: write` on the job (or a PAT/GitHub App token as
-`pages-token`); without it the push succeeds but the published site never
-updates, and the action emits a warning.
+so Badgers explicitly requests one through the REST API after each changed
+branch push. Reruns with the same coverage content reuse the previously
+published generation time and skip another build when the current commit
+already has a queued, running, or successful build. A missing or failed
+build is requested again.
+Calling this endpoint needs `pages: write` on the job (or a PAT/GitHub App
+token as `pages-token`); without it the push succeeds but the published site
+never updates, and the action emits a warning.
 
 The Pages inputs mirror the repository storage inputs: `pages-repo`,
 `pages-branch`, `pages-prefix`, and `pages-token`. By default the report
@@ -293,10 +287,11 @@ default `GITHUB_TOKEN` cannot push there, and `pages-token` keeps that
 credential separate from the `github-token` used for PR comments and check
 annotations. PAT and GitHub App pushes also trigger Pages builds natively.
 
-`pages-retention` defaults to `all`; set a positive integer to keep only
-that many `pr-*` report directories (the highest PR numbers, plus the
-current deployment) under the prefix. `branch-*` directories and anything
-outside the prefix are always kept.
+`pages-retention` defaults to `20`: keep the 20 `pr-*` directories with the
+highest PR numbers, plus the current deployment. Set `all` to keep every
+deployed PR report. `branch-*` directories and anything outside the prefix are
+always kept. Pruned reports no longer have a Pages URL, but remain available
+from the repository storage branch if configured.
 
 `fail-on-partial-branches` (default `false`) is the branch-coverage analog: it
 fails while changed lines still have partially taken branches. It requires
@@ -345,8 +340,8 @@ Set `github-storage-repo` to keep browsable reports and compressed snapshots in
 a dedicated Git branch. On pull requests, Badgers reads the exact merge-base
 snapshot from this branch when available, then falls back to the latest base
 branch pointer. It only re-runs the coverage command at the merge-base when
-neither snapshot is stored. `github-storage-branch` defaults to
-`badgers-coverage`; `github-storage-prefix` defaults to `badgers`.
+neither snapshot is stored and `base-rebuild` is `auto`. `github-storage-branch`
+defaults to `badgers-coverage`; `github-storage-prefix` defaults to `badgers`.
 
 ```text
 badgers/repos/{owner}/{repo}/
@@ -360,10 +355,11 @@ badgers/repos/{owner}/{repo}/
   prs/{number}/README.md
 ```
 
-Pass `--html-report <DIR>` (or set it in the action) to store the generated
-`coverage-report/` directory alongside the snapshot. Every file in the tree is
-written to `commits/{sha}/html/{relative_path}`, and `html_prefix` in the
-pointer JSON records the bundle root so tooling can locate it later.
+The action stores the generated `coverage-report/` bundle alongside the
+snapshot on its own; with the CLI, pass `badgers snapshot push --html-report
+<DIR>`. Every file in the tree is written to
+`commits/{sha}/html/{relative_path}`, and `html_prefix` in the pointer JSON
+records the bundle root so tooling can locate it later.
 
 **HTML is not renderable via GitHub's blob or raw URLs.** Use `badgers view
 <PR>` to download and open the self-contained bundle. You can also check out
@@ -380,9 +376,13 @@ silently clobbering each other.
 **Retention.** Set `github-storage-retention: latest` (the default) to
 automatically prune `commits/{sha}` directories that are no longer referenced
 by any `refs/*/latest.json` or `prs/*/latest.json` pointer after each push.
-Use `all` to skip pruning and keep all historical commit bundles. Retention
-operates only on the temporary clone and cannot reach the GCS bucket; GCS
-baselines are always safe.
+Use `all` to skip pruning and keep all historical commit bundles. The storage
+branch is the only durable copy: Badgers keeps no snapshots elsewhere, and
+because each push replaces the branch with a fresh orphan commit, pruned
+directories cannot be recovered from branch history. A pull request whose
+exact merge-base snapshot was pruned falls back to the latest base branch
+snapshot as an approximate baseline; use `all` when exact baselines for older
+merge-bases matter.
 
 The default `github-storage-token` works when the storage repository is the
 repository running the workflow and the job grants `contents: write`. For a
@@ -440,6 +440,6 @@ the existing tag if either job fails.
 ## Status
 
 Badgers implements PR line coverage, coverage delta, diff coverage, GitHub PR
-comments and Check annotations, plus GCS- and GitHub-repository-backed history.
+comments and Check annotations, plus GitHub-repository-backed history.
 The project is being dogfooded on this repository while the public action API is
 stabilized.

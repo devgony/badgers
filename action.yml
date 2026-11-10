@@ -45,15 +45,6 @@ inputs:
   pages:
     description: Deploy the HTML report to GitHub Pages (gh-pages branch)
     default: "false"
-  gcs-bucket:
-    description: >
-      GCS bucket for snapshot history (baselines without re-running tests).
-      Requires google-github-actions/auth to run first in the calling
-      workflow. Empty disables GCS.
-    default: ""
-  gcs-prefix:
-    description: Object key prefix inside the GCS bucket
-    default: "badgers"
   pr-comment:
     description: >
       Post/update a coverage summary comment on the PR (marker-based upsert).
@@ -129,10 +120,10 @@ inputs:
   pages-retention:
     description: >
       Retention policy for pr-* report directories on the Pages branch.
-      'all' (default) keeps every deployed report. A positive integer keeps
-      only that many pull request directories with the highest PR numbers
-      plus the current deployment; branch-* directories are always kept.
-    default: "all"
+      '20' (default) keeps the 20 pull request directories with the highest
+      PR numbers plus the current deployment; 'all' keeps every deployed
+      report. Branch directories are always kept.
+    default: "20"
   github-token:
     description: >
       Token used to post PR comments and check annotations, and the Pages
@@ -191,6 +182,7 @@ runs:
       uses: Swatinem/rust-cache@v2
       with:
         workspaces: ${{ github.action_path }}
+        save-if: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
 
     - name: Build badgers
       if: steps.badgers-cli.outputs.installed != 'true'
@@ -257,42 +249,6 @@ runs:
           } >> "$GITHUB_STEP_SUMMARY"
         fi
 
-    - name: Issue GCS access token
-      if: >-
-        inputs.gcs-bucket != '' &&
-        (github.event_name == 'push' ||
-         (github.event_name == 'pull_request' &&
-          github.event.pull_request.head.repo.full_name == github.repository))
-      shell: bash
-      run: |
-        set -euo pipefail
-        TOKEN=$(gcloud auth print-access-token)
-        echo "::add-mask::$TOKEN"
-        echo "BADGERS_GCS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
-
-    - name: Fetch baseline snapshot from GCS
-      id: gcs-baseline
-      if: >-
-        github.event_name == 'pull_request' &&
-        inputs.gcs-bucket != '' &&
-        github.event.pull_request.head.repo.full_name == github.repository
-      shell: bash
-      env:
-        BADGERS_BASE_REF: ${{ github.base_ref }}
-        BADGERS_GCS_BUCKET: ${{ inputs.gcs-bucket }}
-        BADGERS_GCS_PREFIX: ${{ inputs.gcs-prefix }}
-      run: |
-        set -euo pipefail
-        git check-ref-format --branch "$BADGERS_BASE_REF" >/dev/null
-        MERGE_BASE=$(git merge-base "origin/${BADGERS_BASE_REF}" HEAD)
-        badgers baseline fetch \
-          --merge-base "$MERGE_BASE" \
-          --base-ref "$BADGERS_BASE_REF" \
-          --bucket "$BADGERS_GCS_BUCKET" \
-          --prefix "$BADGERS_GCS_PREFIX" \
-          --repo "$GITHUB_REPOSITORY" \
-          -o /tmp/badgers-base-snapshot.json | tee -a "$GITHUB_OUTPUT"
-
     # Reading the storage branch needs no write access, so fork pull requests
     # are allowed here: same-repository storage is readable with the default
     # read-only fork token, and public storage repositories are readable
@@ -301,9 +257,7 @@ runs:
       id: github-baseline
       if: >-
         github.event_name == 'pull_request' &&
-        inputs.github-storage-repo != '' &&
-        steps.gcs-baseline.outputs.baseline-kind != 'exact' &&
-        steps.gcs-baseline.outputs.baseline-kind != 'approximate'
+        inputs.github-storage-repo != ''
       shell: bash
       env:
         BADGERS_BASE_REF: ${{ github.base_ref }}
@@ -363,8 +317,6 @@ runs:
       if: >-
         github.event_name == 'pull_request' &&
         inputs.base-rebuild != 'never' &&
-        steps.gcs-baseline.outputs.baseline-kind != 'exact' &&
-        steps.gcs-baseline.outputs.baseline-kind != 'approximate' &&
         steps.github-baseline.outputs.baseline-kind != 'exact' &&
         steps.github-baseline.outputs.baseline-kind != 'approximate'
       shell: bash
@@ -518,47 +470,6 @@ runs:
             echo "::notice::Markdown report exceeds the job summary size limit"
           fi
         fi
-
-    - name: Push snapshot to GCS
-      if: >-
-        inputs.gcs-bucket != '' &&
-        (github.event_name == 'push' ||
-         (github.event_name == 'pull_request' &&
-          github.event.pull_request.head.repo.full_name == github.repository))
-      shell: bash
-      working-directory: ${{ inputs.working-directory }}
-      env:
-        BADGERS_EVENT_NAME: ${{ github.event_name }}
-        BADGERS_PR_NUMBER: ${{ github.event.pull_request.number }}
-        BADGERS_GCS_BUCKET: ${{ inputs.gcs-bucket }}
-        BADGERS_GCS_PREFIX: ${{ inputs.gcs-prefix }}
-      run: |
-        set -euo pipefail
-        SHA=$(git rev-parse HEAD)
-        if [[ ! "$SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
-          echo "::error::invalid commit SHA"
-          exit 1
-        fi
-        COMMITTED_AT=$(git show -s --format=%cI HEAD)
-        REF_ARGS=()
-        if [ "$BADGERS_EVENT_NAME" = "pull_request" ]; then
-          if [[ ! "$BADGERS_PR_NUMBER" =~ ^[0-9]+$ ]]; then
-            echo "::error::invalid pull request number"
-            exit 1
-          fi
-          REF_ARGS=(--pr "$BADGERS_PR_NUMBER")
-        else
-          git check-ref-format --branch "$GITHUB_REF_NAME" >/dev/null
-          REF_ARGS=(--branch "$GITHUB_REF_NAME")
-        fi
-        badgers snapshot push \
-          --snapshot coverage-snapshot.json \
-          --sha "$SHA" \
-          --committed-at "$COMMITTED_AT" \
-          "${REF_ARGS[@]}" \
-          --bucket "$BADGERS_GCS_BUCKET" \
-          --prefix "$BADGERS_GCS_PREFIX" \
-          --repo "$GITHUB_REPOSITORY"
 
     - name: Push report to GitHub repository storage
       if: >-
@@ -766,6 +677,7 @@ runs:
         REMOTE="${GITHUB_SERVER_URL}/${PAGES_REPO}.git"
 
         DEPLOYED=false
+        PAGES_CHANGED=false
         for attempt in 1 2 3 4 5; do
           SITE=$(mktemp -d)
           CLONED_SHA=""
@@ -787,9 +699,23 @@ runs:
           git -C "$SITE" config user.name "github-actions[bot]"
           git -C "$SITE" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+          # The report index includes a wall-clock generation time. Reuse
+          # its last published value when all coverage content is unchanged,
+          # so rerunning the same commit does not create a Pages artifact.
+          REPORT_EQUIVALENT=false
+          if [ -n "$CLONED_SHA" ] &&
+              python3 "$GITHUB_ACTION_PATH/scripts/pages_report_equivalent.py" \
+                "$REPORT_SRC" "$SITE/$TARGET_DIR"; then
+            REPORT_EQUIVALENT=true
+          fi
+
           rm -rf "${SITE:?}/${TARGET_DIR}"
           mkdir -p "$SITE/$TARGET_DIR"
           cp -R "$REPORT_SRC/." "$SITE/$TARGET_DIR/"
+          if [ "$REPORT_EQUIVALENT" = "true" ]; then
+            git -C "$SITE" show "${CLONED_SHA}:${TARGET_DIR}/index.html" \
+              > "$SITE/$TARGET_DIR/index.html"
+          fi
           if [ "$HISTORY_MODE" = "replace" ]; then
             touch "$SITE/.nojekyll"
           fi
@@ -815,6 +741,7 @@ runs:
               -c "http.extraheader=AUTHORIZATION: basic $AUTH_HEADER" \
               push ${PUSH_ARGS[@]+"${PUSH_ARGS[@]}"} origin "HEAD:refs/heads/$PAGES_BRANCH"; then
             DEPLOYED=true
+            PAGES_CHANGED=true
             break
           fi
           rm -rf "$SITE"
@@ -830,14 +757,23 @@ runs:
           --method POST >/dev/null 2>&1 \
           || echo "Pages already enabled or token lacks pages:write (enable once in Settings → Pages)"
 
-        # Commits pushed with the workflow's GITHUB_TOKEN never trigger the
-        # Pages build on their own, so a build must be requested explicitly.
-        # PAT and GitHub App pushes do trigger builds; the extra request is
-        # harmless because GitHub queues it.
-        if gh api --method POST "repos/${PAGES_REPO}/pages/builds" >/dev/null 2>&1; then
-          echo "requested a GitHub Pages build"
-        else
-          echo "::warning::Pushed ${PAGES_BRANCH} but could not request a Pages build; the report will not appear until one runs. Grant the job 'pages: write', or pass a PAT or GitHub App token as pages-token."
+        # GITHUB_TOKEN pushes do not trigger Pages builds. On an unchanged
+        # branch, skip only when its current commit already has a live or
+        # successful build; recover a failed or missing build on reruns.
+        if [ "$PAGES_CHANGED" != "true" ]; then
+          LATEST_BUILD=$(gh api "repos/${PAGES_REPO}/pages/builds/latest" \
+            --jq '.commit + " " + .status' 2>/dev/null || true)
+          case "$LATEST_BUILD" in
+            "$CLONED_SHA built"|"$CLONED_SHA building"|"$CLONED_SHA queued") ;;
+            *) PAGES_CHANGED=true ;;
+          esac
+        fi
+        if [ "$PAGES_CHANGED" = "true" ]; then
+          if gh api --method POST "repos/${PAGES_REPO}/pages/builds" >/dev/null 2>&1; then
+            echo "requested a GitHub Pages build"
+          else
+            echo "::warning::Could not request a Pages build for ${PAGES_BRANCH}; the report will not appear until one runs. Grant the job 'pages: write', or pass a PAT or GitHub App token as pages-token."
+          fi
         fi
 
         OWNER="${PAGES_REPO%%/*}"
@@ -873,8 +809,8 @@ runs:
         BADGERS_CHECK_ANNOTATIONS: ${{ inputs.check-annotations }}
         BADGERS_FILES_CHANGED_URL: ${{ steps.report-navigation.outputs.files-changed-url }}
         BADGERS_MARKDOWN_REPORT_URL: ${{ steps.report-navigation.outputs.durable-report-url }}
-        BADGERS_BASELINE_KIND: ${{ steps.github-baseline.outputs.baseline-kind || steps.gcs-baseline.outputs.baseline-kind }}
-        BADGERS_BASELINE_SHA: ${{ steps.github-baseline.outputs.baseline-sha || steps.gcs-baseline.outputs.baseline-sha }}
+        BADGERS_BASELINE_KIND: ${{ steps.github-baseline.outputs.baseline-kind }}
+        BADGERS_BASELINE_SHA: ${{ steps.github-baseline.outputs.baseline-sha }}
         BADGERS_BASE_REF: ${{ github.base_ref }}
         BADGERS_HTML_REPORT_URL: ${{ steps.pages.outputs.report-url }}
         BADGERS_PR_NUMBER: ${{ github.event.pull_request.number }}

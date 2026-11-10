@@ -1,12 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{PutOptions, StorageBackend, StorageError, StoredObject};
+use crate::{StorageBackend, StorageError, StoredObject};
 
-/// Filesystem-backed storage for tests and local development.
+/// Filesystem-backed storage rooted at a local directory.
 ///
-/// Generations are not tracked: reads report generation `0` and
-/// [`PutOptions::if_generation_match`] is ignored, per the storage design.
+/// Writes are atomic per object (temp file + rename) and refuse to follow
+/// symlinks anywhere under the root.
 pub struct LocalBackend {
     root: PathBuf,
 }
@@ -24,7 +24,7 @@ impl LocalBackend {
                 .split('/')
                 .any(|seg| seg.is_empty() || seg == "." || seg == "..");
         if !valid {
-            return Err(StorageError::Http {
+            return Err(StorageError::Invalid {
                 key: key.to_string(),
                 message: "invalid object key".to_string(),
             });
@@ -35,7 +35,7 @@ impl LocalBackend {
     fn ensure_no_symlinks(&self, key: &str, path: &Path) -> Result<(), StorageError> {
         let relative = path
             .strip_prefix(&self.root)
-            .map_err(|_| StorageError::Http {
+            .map_err(|_| StorageError::Invalid {
                 key: key.to_string(),
                 message: "object path escaped local storage root".to_string(),
             })?;
@@ -57,7 +57,7 @@ impl LocalBackend {
         check_component(key, &self.root, true)?;
         let relative = parent
             .strip_prefix(&self.root)
-            .map_err(|_| StorageError::Http {
+            .map_err(|_| StorageError::Invalid {
                 key: key.to_string(),
                 message: "object parent escaped local storage root".to_string(),
             })?;
@@ -69,7 +69,7 @@ impl LocalBackend {
                     return Err(symlink_err(key, &current));
                 }
                 Ok(metadata) if !metadata.is_dir() => {
-                    return Err(StorageError::Http {
+                    return Err(StorageError::Invalid {
                         key: key.to_string(),
                         message: format!(
                             "storage path component is not a directory: {}",
@@ -93,7 +93,7 @@ static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 fn check_component(key: &str, path: &Path, require_dir: bool) -> Result<bool, StorageError> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => Err(symlink_err(key, path)),
-        Ok(metadata) if require_dir && !metadata.is_dir() => Err(StorageError::Http {
+        Ok(metadata) if require_dir && !metadata.is_dir() => Err(StorageError::Invalid {
             key: key.to_string(),
             message: format!("storage root is not a directory: {}", path.display()),
         }),
@@ -104,7 +104,7 @@ fn check_component(key: &str, path: &Path, require_dir: bool) -> Result<bool, St
 }
 
 fn symlink_err(key: &str, path: &Path) -> StorageError {
-    StorageError::Http {
+    StorageError::Invalid {
         key: key.to_string(),
         message: format!("storage path contains a symlink: {}", path.display()),
     }
@@ -122,16 +122,13 @@ impl StorageBackend for LocalBackend {
         let path = self.path_for(key)?;
         self.ensure_no_symlinks(key, &path)?;
         match std::fs::read(&path) {
-            Ok(data) => Ok(Some(StoredObject {
-                data,
-                generation: 0,
-            })),
+            Ok(data) => Ok(Some(StoredObject { data })),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(io_err(key, e)),
         }
     }
 
-    fn put(&self, key: &str, data: &[u8], _opts: PutOptions) -> Result<(), StorageError> {
+    fn put(&self, key: &str, data: &[u8]) -> Result<(), StorageError> {
         let path = self.path_for(key)?;
         let parent = path.parent().unwrap_or(Path::new("."));
         self.create_safe_parent_dirs(key, parent)?;
@@ -167,13 +164,12 @@ mod tests {
         assert!(!backend.exists(key).unwrap());
         assert_eq!(backend.get(key).unwrap(), None);
 
-        backend.put(key, b"hello", PutOptions::default()).unwrap();
+        backend.put(key, b"hello").unwrap();
         assert!(backend.exists(key).unwrap());
         let obj = backend.get(key).unwrap().unwrap();
         assert_eq!(obj.data, b"hello");
-        assert_eq!(obj.generation, 0);
 
-        backend.put(key, b"world", PutOptions::default()).unwrap();
+        backend.put(key, b"world").unwrap();
         assert_eq!(backend.get(key).unwrap().unwrap().data, b"world");
     }
 
@@ -195,7 +191,7 @@ mod tests {
         let backend = LocalBackend::new(dir.path());
         let key = "badgers/repos/o/r/commits/abc/README.md";
 
-        assert!(backend.put(key, b"unsafe", PutOptions::default()).is_err());
+        assert!(backend.put(key, b"unsafe").is_err());
         assert!(
             !outside
                 .path()

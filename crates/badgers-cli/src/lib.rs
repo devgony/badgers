@@ -7,7 +7,6 @@ mod render;
 mod report;
 mod report_github;
 mod report_markdown;
-mod setup_gcs;
 mod snapshot_push;
 mod storage_opts;
 mod summary;
@@ -37,19 +36,12 @@ pub enum Command {
     Snapshot(SnapshotCommand),
     #[command(subcommand)]
     Baseline(BaselineCommand),
-    #[command(subcommand)]
-    Setup(SetupCommand),
     /// Show the latest stored coverage diff for a pull request
     Diff(diff::DiffArgs),
     /// Run coverage locally and report uncovered changed or repo-wide lines
     Cov(cov::CovArgs),
     /// Download and open the latest stored HTML report for a pull request
     View(view::ViewArgs),
-}
-
-#[derive(Subcommand)]
-pub enum SetupCommand {
-    Gcs(setup_gcs::SetupGcsArgs),
 }
 
 #[derive(Subcommand)]
@@ -82,7 +74,6 @@ pub fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Report(ReportCommand::Markdown(args)) => success(report_markdown::run(&args)),
         Command::Snapshot(SnapshotCommand::Push(args)) => success(snapshot_push::run(&args)),
         Command::Baseline(BaselineCommand::Fetch(args)) => success(baseline_fetch::run(&args)),
-        Command::Setup(SetupCommand::Gcs(args)) => success(setup_gcs::run(&args)),
         Command::Diff(args) => success(diff::run(&args)),
         Command::Cov(args) => cov::run(&args),
         Command::View(args) => success(view::run(&args)),

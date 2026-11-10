@@ -2,7 +2,7 @@ use std::io::Read as _;
 
 use anyhow::Context;
 use badge_rs_core::{CoverageSnapshot, SCHEMA_VERSION};
-use badge_rs_storage::{BranchPointer, POINTER_SCHEMA_VERSION};
+use badge_rs_storage::{BranchPointer, POINTER_SCHEMA_VERSION, StorageBackend};
 use clap::Args;
 
 use crate::storage_opts::StorageOpts;
@@ -31,7 +31,7 @@ pub struct BaselineFetchArgs {
 
 pub fn run(args: &BaselineFetchArgs) -> anyhow::Result<()> {
     validate_commit_sha(&args.merge_base).context("invalid merge-base commit SHA")?;
-    let backend = args.storage.backend()?;
+    let backend = args.storage.backend();
     let keys = args.storage.keys();
 
     let exact_key = keys.commit_snapshot(&args.merge_base);

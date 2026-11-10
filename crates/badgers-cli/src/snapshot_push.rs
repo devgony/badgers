@@ -4,7 +4,7 @@ use anyhow::Context;
 use badge_rs_core::CoverageSnapshot;
 use badge_rs_core::compare::{ComparisonAnalysisDocument, is_supported_comparison_schema_version};
 use badge_rs_storage::{
-    BranchPointer, POINTER_SCHEMA_VERSION, PointerUpdate, PutOptions, update_pointer_if_newer,
+    BranchPointer, POINTER_SCHEMA_VERSION, PointerUpdate, StorageBackend, update_pointer_if_newer,
 };
 use clap::Args;
 
@@ -64,7 +64,7 @@ fn ensure_readable_artifact_size(len: u64, what: &str) -> anyhow::Result<()> {
 }
 
 pub fn run(args: &SnapshotPushArgs) -> anyhow::Result<()> {
-    let backend = args.storage.backend()?;
+    let backend = args.storage.backend();
     let keys = args.storage.keys();
 
     let json = std::fs::read(&args.snapshot)
@@ -81,14 +81,7 @@ pub fn run(args: &SnapshotPushArgs) -> anyhow::Result<()> {
     let compressed = zstd::encode_all(json.as_slice(), ZSTD_LEVEL).context("zstd compression")?;
 
     let snapshot_key = keys.commit_snapshot(&args.sha);
-    backend.put(
-        &snapshot_key,
-        &compressed,
-        PutOptions {
-            if_generation_match: None,
-            content_type: "application/zstd",
-        },
-    )?;
+    backend.put(&snapshot_key, &compressed)?;
     println!("uploaded: {snapshot_key} ({} bytes)", compressed.len());
 
     let comparison_key = if let Some(path) = &args.comparison {
@@ -111,14 +104,7 @@ pub fn run(args: &SnapshotPushArgs) -> anyhow::Result<()> {
         let compressed =
             zstd::encode_all(json.as_slice(), ZSTD_LEVEL).context("zstd comparison compression")?;
         let key = keys.commit_comparison(&args.sha);
-        backend.put(
-            &key,
-            &compressed,
-            PutOptions {
-                if_generation_match: None,
-                content_type: "application/zstd",
-            },
-        )?;
+        backend.put(&key, &compressed)?;
         println!("uploaded: {key} ({} bytes)", compressed.len());
         Some(key)
     } else {
@@ -134,7 +120,7 @@ pub fn run(args: &SnapshotPushArgs) -> anyhow::Result<()> {
         .transpose()?;
     let report_key = report.as_ref().map(|_| keys.commit_report(&args.sha));
     if let (Some(markdown), Some(key)) = (&report, &report_key) {
-        put_markdown(backend.as_ref(), key, markdown)?;
+        put_markdown(&backend, key, markdown)?;
     }
 
     let html_prefix = if let Some(dir) = &args.html_report {
@@ -154,22 +140,13 @@ pub fn run(args: &SnapshotPushArgs) -> anyhow::Result<()> {
         let prefix = keys.commit_html_prefix(&args.sha);
         for (relative, data) in &files {
             let key = format!("{prefix}/{relative}");
-            backend.put(
-                &key,
-                data,
-                PutOptions {
-                    if_generation_match: None,
-                    content_type: html_content_type(relative),
-                },
-            )?;
+            backend.put(&key, data)?;
             println!("uploaded: {key} ({} bytes)", data.len());
         }
         Some(prefix)
     } else {
         None
     };
-
-    let materialize_report_alias = args.storage.local_dir.is_some();
 
     let mut pointer_keys = Vec::new();
     if let Some(branch) = &args.branch {
@@ -196,11 +173,11 @@ pub fn run(args: &SnapshotPushArgs) -> anyhow::Result<()> {
             html_prefix: html_prefix.clone(),
             updated_at: updated_at.clone(),
         };
-        match update_pointer_if_newer(backend.as_ref(), &key, &pointer)? {
+        match update_pointer_if_newer(&backend, &key, &pointer)? {
             PointerUpdate::Updated => {
                 println!("pointer updated: {key}");
-                if materialize_report_alias && let Some(markdown) = &report {
-                    put_markdown(backend.as_ref(), &report_alias_key, markdown)?;
+                if let Some(markdown) = &report {
+                    put_markdown(&backend, &report_alias_key, markdown)?;
                 }
             }
             PointerUpdate::SkippedOlder => {
@@ -211,19 +188,8 @@ pub fn run(args: &SnapshotPushArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn put_markdown(
-    backend: &dyn badge_rs_storage::StorageBackend,
-    key: &str,
-    markdown: &[u8],
-) -> anyhow::Result<()> {
-    backend.put(
-        key,
-        markdown,
-        PutOptions {
-            if_generation_match: None,
-            content_type: "text/markdown; charset=utf-8",
-        },
-    )?;
+fn put_markdown(backend: &dyn StorageBackend, key: &str, markdown: &[u8]) -> anyhow::Result<()> {
+    backend.put(key, markdown)?;
     println!("uploaded: {key} ({} bytes)", markdown.len());
     Ok(())
 }
@@ -267,25 +233,6 @@ fn walk_html_report(dir: &Path, base: &Path) -> anyhow::Result<Vec<(String, Vec<
         }
     }
     Ok(results)
-}
-
-fn html_content_type(filename: &str) -> &'static str {
-    let ext = filename
-        .rsplit('.')
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    match ext.as_str() {
-        "html" | "htm" => "text/html; charset=utf-8",
-        "css" => "text/css; charset=utf-8",
-        "js" | "mjs" => "text/javascript",
-        "svg" => "image/svg+xml",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "ico" => "image/x-icon",
-        "json" => "application/json",
-        _ => "application/octet-stream",
-    }
 }
 
 #[cfg(test)]

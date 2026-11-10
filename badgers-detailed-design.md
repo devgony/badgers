@@ -4,6 +4,8 @@
 상태: Draft v1
 선행 문서: [badgers-project-summary.md](./badgers-project-summary.md)
 
+> Storage 관련 절(2, 3, 5.1, 7, 8.3, 10-13)은 현재 구현인 GitHub repository branch storage 기준으로 갱신했다.
+
 ## 1. 개요
 
 Badgers는 Rust/Python 프로젝트의 line coverage를 PR마다 계산하고, baseline 대비 증감과 diff coverage를 GitHub PR에 리포트하는 도구다. 이 문서는 프로젝트 요약에서 결정된 사항을 바탕으로 MVP(1차) 구현의 상세 설계를 기술한다.
@@ -14,7 +16,7 @@ Badgers는 Rust/Python 프로젝트의 line coverage를 PR마다 계산하고, b
 - PR head snapshot과 baseline snapshot의 전체 coverage 증감 계산
 - `git diff base...head` 기준 diff coverage 계산
 - GitHub Check Run + marker 기반 PR comment 리포트
-- GCS에 snapshot 저장/조회
+- GitHub repository 전용 branch에 snapshot 저장/조회
 
 ### 1.2 비목표 (MVP에서 제외)
 
@@ -34,7 +36,6 @@ Badgers는 Rust/Python 프로젝트의 line coverage를 PR마다 계산하고, b
 | GitHub Actions (badgers-action)                              |
 |                                                              |
 |  actions/checkout (fetch-depth: 0)                           |
-|  google-github-actions/auth (WIF)                            |
 |  badgers CLI                                                 |
 |   |                                                          |
 |   |  collect        merge          compare        report     |
@@ -42,10 +43,12 @@ Badgers는 Rust/Python 프로젝트의 line coverage를 PR마다 계산하고, b
 |  [lcov parse] -> [CoverageSnapshot] -> [Delta/DiffCov] ------+--> GitHub API
 |                        |                    ^                |    (Check Run,
 |                        v                    |                |     PR comment)
-|                   GCS upload           GCS download          |
+|                 snapshot push        baseline fetch          |
+|                 (git push)           (git clone)             |
 +------------------------|--------------------|----------------+
                          v                    |
-                 gs://bucket/badgers/... <----+
+              storage branch <----------------+
+  ({github-storage-repo}@{github-storage-branch}:{prefix}/...)
 ```
 
 구성 요소:
@@ -54,10 +57,10 @@ Badgers는 Rust/Python 프로젝트의 line coverage를 PR마다 계산하고, b
 |---|---|
 | `badgers` CLI (Rust) | 수집, 파싱, 병합, 비교, 업로드, 리포트의 전 과정 |
 | `badgers-action` | CLI 바이너리를 받아 실행하는 GitHub Action 래퍼 |
-| GCS | snapshot 원장 (source of truth) |
+| storage branch | GitHub repository의 전용 branch (`github-storage-branch`, 기본 `badgers-coverage`). snapshot 원장 (source of truth) |
 | GitHub API | Check Run 생성, PR comment 작성/갱신 |
 
-서버 컴포넌트는 없다. 모든 로직은 CI job 안에서 실행된다 (stateless, storage가 유일한 상태).
+서버 컴포넌트는 없다. 모든 로직은 CI job 안에서 실행된다 (stateless, storage branch가 유일한 durable 상태). 실행 중 생성되는 snapshot/comparison/report 파일은 runner 임시 파일이며 job 종료와 함께 사라진다.
 
 ### 2.1 Cargo workspace 구조
 
@@ -67,7 +70,7 @@ badgers/
   crates/
     badgers-core/       # 데이터 모델, snapshot 병합/비교, diff coverage 계산
     badgers-lcov/       # LCOV parser/writer
-    badgers-storage/    # StorageBackend trait + gcs/local 구현
+    badgers-storage/    # StorageBackend trait + local(storage branch checkout) 구현
     badgers-github/     # Check Run, PR comment, GitHub context 파싱
     badgers-cli/        # clap 기반 CLI (binary: badgers)
   action/               # badgers-action (composite action)
@@ -81,11 +84,11 @@ badgers/
 - `clap` (derive) - CLI
 - `serde` + `serde_json` - 직렬화
 - `zstd` - snapshot 압축
-- `reqwest` (rustls) - GCS/GitHub HTTP
+- `reqwest` (rustls) - GitHub HTTP
 - `tokio` - async runtime
 - `jiff` 또는 `time` - RFC 3339 timestamp
 - `thiserror` / `anyhow` - 에러 처리
-- GCS는 공식 SDK 대신 JSON API 직접 호출 (필요 API가 object get/put/list 정도로 좁고, WIF 토큰은 action이 미리 발급해 `GOOGLE_APPLICATION_CREDENTIALS` 또는 access token 환경변수로 전달됨)
+- storage 접근은 HTTP API가 아니라 git으로 한다. action이 storage branch를 clone/commit/push하고, CLI는 checkout 디렉터리(`--local-dir`)만 읽고 쓴다.
 
 ---
 
@@ -95,7 +98,7 @@ badgers/
 
 ```rust
 /// 하나의 commit에 대한 coverage 측정 결과 전체.
-/// GCS에 coverage.json.zst로 저장되는 canonical 산출물.
+/// storage branch에 coverage.json.zst로 저장되는 canonical 산출물.
 struct CoverageSnapshot {
     schema_version: u32,          // 1
     repo: String,                 // "jubilee-works/timetree-planner-server"
@@ -136,7 +139,7 @@ enum Language { Rust, Python, Unknown }
 
 ### 3.2 Manifest
 
-run 단위 메타데이터. 스냅샷 생성 컨텍스트를 기록한다.
+run 단위 메타데이터. 스냅샷 생성 컨텍스트를 기록한다. (초안 항목이며 현재 storage layout에는 저장하지 않는다.)
 
 ```rust
 struct RunManifest {
@@ -146,7 +149,7 @@ struct RunManifest {
     repo: String,
     commit_sha: String,
     event: String,                // "pull_request" | "push"
-    snapshot_key: String,         // GCS object key
+    snapshot_key: String,         // storage branch 안의 snapshot 경로
     created_at: String,
 }
 ```
@@ -252,23 +255,25 @@ fn resolve_baseline(base_ref, head_ref, storage) -> Baseline:
 ```
 
 - `Approximate`일 때 리포트에 `baseline: abc1234 (approximate - merge-base snapshot not found)`를 명시한다. base branch에 PR 분기 이후의 커밋이 섞여 증감이 부정확할 수 있음을 사용자에게 알린다.
-- `None`일 때는 delta를 생략하고 절대값만 리포트하며, base branch workflow를 먼저 실행하라는 안내를 comment에 포함한다.
+- `None`일 때는 delta를 생략하고 절대값만 리포트하며, base branch workflow를 먼저 실행하라는 안내를 comment에 포함한다. (현재 action은 `base-rebuild: auto`(기본)이면 storage에서 baseline을 못 찾았을 때 merge-base에서 coverage command를 다시 실행해 baseline을 만들고, `never`일 때만 head-only report가 된다.)
 - shallow clone에서 merge-base 계산이 실패하면 명확한 에러: `"fetch-depth: 0 (or sufficient depth) is required"`.
 
 ### 5.1 Base branch push 시 포인터 갱신 (동시성)
 
 ```text
-1. commits/{sha}/coverage.json.zst 업로드 (무조건, 충돌 없음 - sha가 key)
-2. refs/{branch}/latest.json 읽기 (object generation 번호 확보)
-3. 기존 pointer.committed_at >= 새 commit의 committed_at 이면 갱신 스킵
+1. storage branch를 clone하고 clone 시점 HEAD SHA를 기록
+2. checkout에 commits/{sha}/coverage.json.zst 등을 쓴다 (충돌 없음 - sha가 key)
+3. refs/{branch}/latest.json 읽기
+4. 기존 pointer.committed_at >= 새 commit의 committed_at 이면 갱신 스킵
    (재실행된 오래된 workflow가 최신 포인터를 되돌리는 것 방지)
-4. ifGenerationMatch={generation}으로 conditional write
-5. 412 Precondition Failed 시 2번부터 재시도 (최대 3회, jitter backoff)
+5. 전체 tree를 parentless commit 하나로 만들고
+   --force-with-lease={clone 시점 SHA}로 push
+6. lease 실패(다른 job이 먼저 push) 시 1번부터 재시도 (최대 5회, backoff)
 ```
 
 ### 5.2 Branch 이름 인코딩
 
-GCS key에 들어가는 branch 이름은 다음으로 인코딩한다:
+storage 경로에 들어가는 branch 이름은 다음으로 인코딩한다:
 
 ```text
 encode(branch) = percent-encode(branch, unreserved = [A-Za-z0-9._-])
@@ -316,41 +321,39 @@ diff_coverage = |covered 전체| / |relevant 전체|    (relevant == 0이면 Non
 ### 7.1 StorageBackend trait
 
 ```rust
-#[async_trait]
 trait StorageBackend {
-    async fn get(&self, key: &str) -> Result<Option<Bytes>, StorageError>;
-    async fn put(&self, key: &str, data: Bytes, opts: PutOptions) -> Result<(), StorageError>;
-    async fn exists(&self, key: &str) -> Result<bool, StorageError>;
-}
-
-struct PutOptions {
-    if_generation_match: Option<i64>,  // GCS conditional write. local backend는 무시
-    content_type: &'static str,
+    fn get(&self, key: &str) -> Result<Option<StoredObject>, StorageError>;
+    fn put(&self, key: &str, data: &[u8]) -> Result<(), StorageError>;
+    fn exists(&self, key: &str) -> Result<bool, StorageError>;
 }
 ```
 
-MVP 구현체: `GcsBackend`, `LocalBackend`(파일시스템 - 테스트/로컬 개발용).
+구현체: `LocalBackend` (파일시스템). action은 storage branch checkout 디렉터리를 `--local-dir`로 넘기고, 원격 동기화(clone/commit/push)는 git으로 직접 수행한다. 로컬 개발/테스트도 같은 backend를 쓴다.
 
-### 7.2 Object key 스킴
+### 7.2 Storage 경로 스킴
 
 ```text
 {prefix}/repos/{owner}/{repo}/
-  commits/{sha}/coverage.json.zst      # canonical snapshot, 영구 보관
-  commits/{sha}/lcov.info.zst          # 원본 LCOV (디버깅용), lifecycle 90d
+  commits/{sha}/coverage.json.zst      # canonical snapshot
+  commits/{sha}/comparison.json.zst    # 비교 결과
+  commits/{sha}/README.md              # Markdown report
+  commits/{sha}/html/                  # HTML report bundle (선택)
   refs/{encoded_branch}/latest.json    # branch 포인터 (비압축 - 작음)
+  refs/{encoded_branch}/README.md
   prs/{pr_number}/latest.json          # PR 최신 run 포인터
-  runs/{run_id}-{run_attempt}/manifest.json
+  prs/{pr_number}/README.md
 ```
 
-- prefix 기본값: `badgers` (action input `gcs-prefix`로 override)
+- prefix 기본값: `badgers` (action input `github-storage-prefix`로 override)
 - 압축: zstd level 3 (속도/압축률 균형)
-- lifecycle rule은 Badgers가 관리하지 않는다. 권장 설정을 문서로 제공 (`lcov.info.zst` 90일, `runs/` 180일)
+- storage branch는 push마다 parentless commit 하나로 교체되므로 git history가 쌓이지 않는다. branch protection을 걸면 안 된다.
+- 보관: `github-storage-retention: latest`(기본)는 어떤 `latest.json`도 참조하지 않는 `commits/{sha}`를 push마다 정리하고, `all`은 모두 유지한다. storage branch 외의 사본은 없다.
 
-### 7.3 GCS 인증
+### 7.3 Storage 인증
 
-- action에서 `google-github-actions/auth@v3`(WIF)가 credential을 준비
-- CLI는 ADC(Application Default Credentials) 체인을 따른다: `GOOGLE_APPLICATION_CREDENTIALS` → metadata server. 로컬 개발은 `gcloud auth application-default login`
-- 필요 권한: bucket에 `roles/storage.objectUser` (object CRUD, bucket 관리 권한 없음)
+- action input `github-storage-token` (기본 `github.token`)으로 storage repository를 clone/push한다.
+- storage repository가 workflow를 실행하는 repository면 기본 token + job의 `contents: write`로 충분하다. 다른 repository는 Contents write 권한의 GitHub App installation token 또는 fine-grained PAT가 필요하다.
+- fork PR은 storage write를 건너뛰고, baseline은 read-only token 또는 anonymous clone(public storage repository)으로 읽는다. 읽지 못하면 merge-base rebuild로 fallback한다.
 
 ---
 
@@ -398,8 +401,7 @@ comment 형식:
 
 ```yaml
 permissions:
-  contents: read        # checkout
-  id-token: write       # WIF
+  contents: write       # checkout + storage branch push (same-repo storage)
   pull-requests: write  # comment
   checks: write         # check run
 ```
@@ -457,12 +459,15 @@ exclude 패턴은 snapshot 생성 시점에 적용한다 (저장된 snapshot은 
 
 **composite action** + 사전 빌드된 바이너리 다운로드 방식 (docker action은 시작 오버헤드, JS action은 바이너리 래핑 보일러플레이트가 커서 배제).
 
+storage input은 현재 `action.yml` 기준이고, 나머지 input은 v1 초안 항목이다. 현재 전체 input 목록은 README와 `action.yml`을 따른다.
+
 ```yaml
 # action/action.yml
 inputs:
-  storage:        { default: "gcs" }
-  gcs-bucket:     { required: true }
-  gcs-prefix:     { default: "badgers" }
+  github-storage-repo:   { default: "" }               # 비어 있으면 storage 비활성
+  github-storage-branch: { default: "badgers-coverage" }
+  github-storage-prefix: { default: "badgers" }
+  github-storage-token:  { default: "${{ github.token }}" }
   rust-lcov:      { required: false }   # 기존 LCOV 재사용
   python-lcov:    { required: false }
   languages:      { required: false }   # "rust,python" - 자동 감지 override
@@ -476,13 +481,13 @@ runs:
 ```
 
 - 바이너리 배포: GitHub Releases에 `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` (musl static 우선 검토)
-- action은 WIF 인증을 직접 하지 않는다. 사용자가 `google-github-actions/auth`를 먼저 실행하는 것을 전제 (문서화)
+- storage branch clone/push는 action이 git으로 직접 수행하며, 인증은 `github-storage-token`만 사용한다. 별도 cloud credential 단계는 없다.
 
 ---
 
 ## 11. 에러 처리 원칙
 
-- 네트워크(GCS/GitHub) 호출은 idempotent 연산에 한해 3회 retry (exponential backoff + jitter)
+- 네트워크(GitHub) 호출은 idempotent 연산에 한해 3회 retry (exponential backoff + jitter). storage branch push는 lease 실패 시 re-clone 후 재시도
 - LCOV 파싱: 알 수 없는 레코드는 skip, 구조 깨짐(잘린 파일 등)은 에러
 - 부분 실패 허용 지점: baseline 조회 실패 → "baseline unavailable"로 계속 진행 (수집된 head snapshot 업로드는 수행)
 - 모든 warning/error는 GitHub Actions annotation 형식(`::warning::`)으로도 출력
@@ -495,7 +500,7 @@ runs:
 |---|---|
 | `badgers-core` | 순수 unit test. snapshot 비교/diff coverage는 table-driven test + proptest(정렬/병합 불변식) |
 | `badgers-lcov` | 실제 cargo llvm-cov / coverage.py 출력물을 fixture로 고정 (`tests/fixtures/*.lcov`) |
-| `badgers-storage` | `LocalBackend`로 trait 계약 테스트, GCS는 wiremock 기반 HTTP mock + precondition(412) 시나리오 |
+| `badgers-storage` | `LocalBackend`로 trait 계약 테스트, pointer 갱신 순서(오래된 commit skip) 시나리오 |
 | `badgers-github` | wiremock으로 comment upsert / check run 시나리오 |
 | E2E | 별도 sandbox repo에서 실제 action 실행 (self-dogfooding: badgers repo 자신의 PR에 badgers 적용) |
 
@@ -506,7 +511,7 @@ runs:
 | 단계 | 산출물 | 검증 기준 |
 |---|---|---|
 | M1 | `badgers-core` + `badgers-lcov`: LCOV → snapshot → compare/diff-coverage | fixture 기반 unit test 통과 |
-| M2 | `badgers-storage` (local, gcs) + baseline resolve + pointer 갱신 | mock GCS 통합 테스트, 412 재시도 검증 |
+| M2 | `badgers-storage` (local) + baseline resolve + pointer 갱신 | storage branch checkout 기반 통합 테스트, 오래된 commit pointer skip 검증 |
 | M3 | `badgers-github` + `badgers run` end-to-end | 실 repo test PR에서 comment/check run 생성 확인 |
 | M4 | `badgers-action` + 바이너리 릴리즈 파이프라인 | sandbox repo에서 action 동작, self-dogfooding 시작 |
 | M5 | 사내 repo(timetree-planner-server) 적용 | 실 PR 2주 운영, false report 없음 |
@@ -516,6 +521,6 @@ runs:
 ## 14. 미해결 질문 (구현 전 결정 필요)
 
 1. **snapshot 크기**: 대형 monorepo에서 `line_hits` 전체 저장 시 zstd 후 수 MB 예상. 문제가 되면 line bitmap 인코딩(covered/uncovered 2-bit) 검토. → M1에서 실측 후 결정
-2. **PR head가 여러 번 push될 때 이전 commit snapshot 정리**: lifecycle rule에 맡길지, `prs/{n}/` 하위만 짧은 TTL을 둘지 → 운영하며 결정
+2. **PR head가 여러 번 push될 때 이전 commit snapshot 정리**: `github-storage-retention: latest`(기본)로 pointer가 참조하지 않는 `commits/{sha}`를 push마다 정리하는 것으로 결정
 3. **`merge_group` (merge queue) 이벤트 지원**: 사내 merge queue 도입 시점에 결정
-4. **badge SVG의 serving 경로** (GCS public vs Cloud Run proxy): 2차 범위
+4. **badge SVG의 serving 경로**: 2차 범위
