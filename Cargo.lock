@@ -345,10 +345,8 @@ dependencies = [
 name = "badge-rs-storage"
 version = "2.5.0"
 dependencies = [
- "httpmock",
  "jiff",
  "percent-encoding",
- "reqwest",
  "serde",
  "serde_json",
  "tempfile",

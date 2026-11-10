@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{PutOptions, StorageBackend, StorageError};
+use crate::{StorageBackend, StorageError};
 
 pub const POINTER_SCHEMA_VERSION: u32 = 1;
 
@@ -32,64 +32,33 @@ pub enum PointerUpdate {
     SkippedOlder,
 }
 
-const MAX_ATTEMPTS: u32 = 3;
-
-/// Read-compare-conditionally-write loop from the design doc (§5.1):
-/// fetch the current pointer with its generation, skip if it already points at
-/// a commit at least as new, otherwise write with `ifGenerationMatch` and
-/// retry from the read on 412 (another run raced us).
+/// Read-compare-write: skip if the stored pointer already references a
+/// commit at least as new, so a re-run of an old workflow cannot roll the
+/// pointer back to an older commit.
 pub fn update_pointer_if_newer(
     backend: &dyn StorageBackend,
     key: &str,
     new: &BranchPointer,
 ) -> Result<PointerUpdate, StorageError> {
     let new_committed = parse_ts(key, &new.committed_at)?;
-    let body = serde_json::to_vec_pretty(new).expect("pointer serializes");
-
-    let mut last_err = None;
-    for attempt in 0..MAX_ATTEMPTS {
-        let generation = match backend.get(key)? {
-            Some(obj) => {
-                if let Ok(existing) = serde_json::from_slice::<BranchPointer>(&obj.data)
-                    && let Ok(existing_committed) = parse_ts(key, &existing.committed_at)
-                    && existing_committed >= new_committed
-                {
-                    return Ok(PointerUpdate::SkippedOlder);
-                }
-                obj.generation
-            }
-            None => 0,
-        };
-
-        let opts = PutOptions {
-            if_generation_match: Some(generation),
-            content_type: "application/json",
-        };
-        match backend.put(key, &body, opts) {
-            Ok(()) => return Ok(PointerUpdate::Updated),
-            Err(StorageError::PreconditionFailed { .. }) if attempt + 1 < MAX_ATTEMPTS => {
-                last_err = Some(StorageError::PreconditionFailed {
-                    key: key.to_string(),
-                });
-                backoff_sleep(attempt);
-            }
-            Err(e) => return Err(e),
-        }
+    if let Some(obj) = backend.get(key)?
+        && let Ok(existing) = serde_json::from_slice::<BranchPointer>(&obj.data)
+        && let Ok(existing_committed) = parse_ts(key, &existing.committed_at)
+        && existing_committed >= new_committed
+    {
+        return Ok(PointerUpdate::SkippedOlder);
     }
-    Err(last_err.expect("loop exits early unless a precondition failure was recorded"))
+
+    let body = serde_json::to_vec_pretty(new).expect("pointer serializes");
+    backend.put(key, &body)?;
+    Ok(PointerUpdate::Updated)
 }
 
 fn parse_ts(key: &str, value: &str) -> Result<jiff::Timestamp, StorageError> {
-    jiff::Timestamp::from_str(value).map_err(|e| StorageError::Http {
+    jiff::Timestamp::from_str(value).map_err(|e| StorageError::Invalid {
         key: key.to_string(),
         message: format!("invalid committed_at {value:?}: {e}"),
     })
-}
-
-fn backoff_sleep(attempt: u32) {
-    let jitter_ms = u64::from(std::process::id()) % 100;
-    let ms = 200u64 * 2u64.pow(attempt) + jitter_ms;
-    std::thread::sleep(std::time::Duration::from_millis(ms));
 }
 
 #[cfg(test)]

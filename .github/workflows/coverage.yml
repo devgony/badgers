@@ -44,4 +44,5 @@ jobs:
           github-storage-retention: latest
           fail-on-uncovered: true
           markdown-summary: true
-          pages: true
+          pages: ${{ github.event.repository.visibility == 'public' }}
+          pages-retention: 20
